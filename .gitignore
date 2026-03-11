@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MyPy cache
+.mypy_cache/
+
+# Node (frontend)
+frontend/node_modules/
+frontend/.next/
+
+# Alembic
+backend/alembic/__pycache__/
+backend/alembic/versions/__pycache__/
+
+# Gemini
+.gemini/
