@@ -21,6 +21,7 @@ class DatabaseConnector:
         self._engine: Optional[AsyncEngine] = None
         self._sync_engine = None
         self._connection_info: Dict[str, Any] = {}
+        self._schema_cache: Optional[Dict[str, Any]] = None
 
     @property
     def is_connected(self) -> bool:
@@ -86,6 +87,7 @@ class DatabaseConnector:
             self._sync_engine.dispose()
             self._sync_engine = None
         self._connection_info = {}
+        self._schema_cache = None
         logger.info("Database connection reference released.")
 
     def get_schema(self) -> Dict[str, Any]:
@@ -95,6 +97,10 @@ class DatabaseConnector:
         """
         if self._sync_engine is None:
             raise ConnectionError("Not connected to any database.")
+
+        if self._schema_cache is not None:
+            logger.info("Using cached schema")
+            return self._schema_cache
 
         inspector = inspect(self._sync_engine)
         schema: Dict[str, Any] = {}
@@ -130,6 +136,7 @@ class DatabaseConnector:
                 "foreign_keys": foreign_keys,
             }
 
+        self._schema_cache = schema
         logger.info(f"Schema loaded: {len(schema)} tables")
         return schema
 

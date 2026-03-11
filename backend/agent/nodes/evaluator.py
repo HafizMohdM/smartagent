@@ -41,6 +41,37 @@ When presenting query results, format them as readable tables or lists.
 Be concise but thorough. Return ONLY valid JSON."""
 
 
+def _summarize_result_for_llm(result: Dict[str, Any]) -> str:
+    """
+    Truncate the tool result so we don't send thousands of tokens to the LLM.
+    We only send the first 10 rows + summary metadata. The frontend still gets the full data.
+    """
+    if result.get("success") is False:
+        return json.dumps(result, default=str)
+    
+    data = result.get("data", {})
+    if not isinstance(data, dict) or "rows" not in data:
+        return json.dumps(result, default=str)
+    
+    # Take only the first 10 rows for the LLM
+    rows = data.get("rows", [])
+    truncated_rows = rows[:10]
+    
+    summary = {
+        "success": True,
+        "metadata": {
+            "row_count": data.get("row_count"),
+            "execution_time_ms": data.get("execution_time_ms"),
+            "truncated_by_db": data.get("truncated"),
+            "showing_for_llm": f"{len(truncated_rows)} out of {len(rows)} rows",
+        },
+        "columns": data.get("columns", []),
+        "sample_rows": truncated_rows
+    }
+    
+    return json.dumps(summary, default=str)
+
+
 async def evaluator_node(state: AgentState) -> Dict[str, Any]:
     """Evaluate the tool result and produce a final response or trigger a retry."""
     iteration = state.get("iteration_count", 0) + 1
@@ -90,7 +121,7 @@ async def evaluator_node(state: AgentState) -> Dict[str, Any]:
         HumanMessage(content=(
             f"User query: {user_query}\n\n"
             f"Plan: {json.dumps(plan)}\n\n"
-            f"Tool result: {json.dumps(tool_result, default=str)}"
+            f"Tool result: {_summarize_result_for_llm(tool_result)}"
         )),
     ]
 

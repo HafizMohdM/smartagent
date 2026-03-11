@@ -11,8 +11,8 @@ from backend.services.database.connector import DatabaseConnector
 
 logger = logging.getLogger(__name__)
 
-MAX_ROWS = 500   # Safety cap on returned rows
-MAX_CELL_LENGTH = 1000  # Truncate overly long cell values
+MAX_ROWS = 100   # Safety cap on returned rows
+MAX_CELL_LENGTH = 200  # Truncate overly long cell values
 
 
 class SQLExecutor:
