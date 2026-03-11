@@ -24,7 +24,7 @@ Rules:
    ALTER, TRUNCATE, or any other data-modification statement.
 2. Use proper JOINs when the question involves multiple tables.
 3. Use aggregate functions (COUNT, SUM, AVG, etc.) when appropriate.
-4. Add LIMIT 100 to prevent excessive result sets unless explicitly asked otherwise.
+4. Add LIMIT 50 to prevent excessive result sets unless explicitly asked otherwise.
 5. Use table and column aliases for readability.
 6. Return ONLY the raw SQL query, nothing else. No markdown, no explanation."""
 
