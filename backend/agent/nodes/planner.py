@@ -15,6 +15,7 @@ from pydantic import SecretStr
 from backend.agent.state import AgentState
 from backend.config.settings import settings
 from backend.agent.tools.registry import ToolRegistry
+from backend.agent.utils.observability import ObservabilityManager
 
 logger = logging.getLogger(__name__)
 
@@ -40,29 +41,50 @@ IMPORTANT: Return ONLY valid JSON. No markdown fences, no extra text."""
 
 async def planner_node(state: AgentState) -> Dict[str, Any]:
     """Analyse user intent and output a structured plan."""
+    start_time = ObservabilityManager.start_span("planner", state)
+    
     registry = ToolRegistry()
     tools_desc = json.dumps(registry.list_tools(), indent=2)
 
+    retry_count = state.get("retry_count", 0)
+    schema_context = state.get("schema_context", "")
+    error_context = state.get("error", "")
+
     # Build conversation context
+    history = state.get("messages", [])
     history_text = ""
-    for msg in (state.get("messages") or [])[-10:]:
+    for msg in history[-10:]:
         history_text += f"{msg['role']}: {msg['content']}\n"
 
-        llm = ChatOpenAI(
-            model=settings.LLM_MODEL,
-            api_key=SecretStr(settings.OPENAI_API_KEY),
-            temperature=0,
+    llm = ChatOpenAI(
+        model=settings.LLM_MODEL,
+        api_key=SecretStr(settings.OPENAI_API_KEY),
+        temperature=0,
+    )
+
+    adaptive_context = ""
+    if retry_count > 0:
+        adaptive_context = (
+            f"\nATTENTION: This is a RETRY attempt (Round {retry_count + 1}).\n"
+            f"Previous error/feedback: {error_context}\n"
+            "Please analyze the previous failure and adjust your parameters or tool choice accordingly."
         )
 
     messages = [
         SystemMessage(content=PLANNER_SYSTEM_PROMPT.format(tools=tools_desc)),
         HumanMessage(content=(
             f"Conversation history:\n{history_text}\n\n"
+            f"Database Schema Context (RAG):\n{schema_context}\n\n"
             f"Current user query: {state['user_query']}"
+            f"{adaptive_context}"
         )),
     ]
 
     response = await llm.ainvoke(messages)
+    
+    # Track tokens (Mocking for now)
+    tokens = {"prompt": 800, "completion": 200}
+    ObservabilityManager.end_span("planner", start_time, state, tokens=tokens)
 
     try:
         content_str = str(response.content)
@@ -73,8 +95,10 @@ async def planner_node(state: AgentState) -> Dict[str, Any]:
             "intent": "unknown",
             "tool": "none",
             "parameters": {},
-            "reasoning": response.content,
+            "reasoning": str(response.content),
         }
 
-    logger.info(f"Plan: tool={plan.get('tool')}, intent={plan.get('intent')}")
-    return {"plan": plan}
+    return {
+        "plan": plan,
+        "token_usage": state.get("token_usage", 0) + 1000
+    }
