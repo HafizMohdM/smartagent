@@ -81,15 +81,59 @@ async def evaluator_node(state: AgentState) -> Dict[str, Any]:
     start_time = ObservabilityManager.start_span("evaluator", state)
     
     retry_count = state.get("retry_count", 0)
-    # ... (rest of logic)
+    user_query = state.get("user_query", "")
+    plan = state.get("plan", {})
+    tool_result = state.get("tool_result", {})
+
+    llm = ChatOpenAI(
+        model=settings.LLM_MODEL,
+        api_key=SecretStr(settings.OPENAI_API_KEY),
+        temperature=0,
+    )
+
+    # Prepare inputs for the evaluator
+    result_summary = _summarize_result_for_llm(tool_result)
     
-    # End span (mocking tokens)
+    messages = [
+        SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            f"User Query: {user_query}\n\n"
+            f"Plan executed: {json.dumps(plan, indent=2)}\n\n"
+            f"Tool Result Summary:\n{result_summary}"
+        ))
+    ]
+
+    response = await llm.ainvoke(messages)
+    
+    try:
+        evaluation = json.loads(str(response.content))
+    except json.JSONDecodeError:
+        logger.error(f"Evaluator returned invalid JSON: {response.content}")
+        evaluation = {
+            "is_complete": True,
+            "response": str(response.content),
+            "retry_reason": None
+        }
+
+    is_complete = evaluation.get("is_complete", True)
+    
+    # Bounded retry: if we hit MAX_ITERATIONS, force complete
+    if not is_complete and retry_count >= MAX_ITERATIONS:
+        logger.warning(f"Max iterations ({MAX_ITERATIONS}) reached. Forcing completion.")
+        is_complete = True
+        evaluation["response"] = f"I've reached the maximum retry limit. Here is the best information I have: {evaluation.get('response', '')}"
+
+    # Track tokens (Mocking for now)
     tokens = {"prompt": 400, "completion": 100}
     ObservabilityManager.end_span("evaluator", start_time, state, tokens=tokens)
+
+    # Accumulate token usage for the state
+    token_usage = state.get("token_usage", 0) + 500
 
     return {
         "final_response": evaluation.get("response", ""),
         "is_complete": is_complete,
         "retry_count": retry_count if is_complete else retry_count + 1,
-        "token_usage": token_usage
+        "token_usage": token_usage,
+        "error": evaluation.get("retry_reason") if not is_complete else None
     }
