@@ -1,0 +1,16 @@
+{
+  "users": {
+    "name": "users",
+    "description": "Primary user table containing profile information.",
+    "primary_table": "auth_users",
+    "primary_key": "id",
+    "attributes": []
+  },
+  "orders": {
+    "name": "orders",
+    "description": "Transaction records for all purchases.",
+    "primary_table": "ecommerce_orders",
+    "primary_key": "id",
+    "attributes": []
+  }
+}

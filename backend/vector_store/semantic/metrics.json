@@ -1,0 +1,29 @@
+{
+  "total_revenue": {
+    "name": "total_revenue",
+    "description": "Sum of all successful transaction amounts in USD.",
+    "sql_snippet": "SUM(amount)",
+    "underlying_tables": [
+      "ecommerce_orders"
+    ],
+    "dimensions": [
+      "candidate_id",
+      "source"
+    ],
+    "is_derived": false,
+    "dependencies": []
+  },
+  "churn_rate": {
+    "name": "churn_rate",
+    "description": "Percentage of users who canceled their subscription in the last 30 days.",
+    "sql_snippet": "COUNT(CASE WHEN status='canceled' THEN 1 END) / COUNT(*)",
+    "underlying_tables": [
+      "auth_users"
+    ],
+    "dimensions": [
+      "plan_type"
+    ],
+    "is_derived": false,
+    "dependencies": []
+  }
+}

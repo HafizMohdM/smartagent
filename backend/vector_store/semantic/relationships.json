@@ -1,0 +1,9 @@
+[
+  {
+    "source_entity": "users",
+    "target_entity": "orders",
+    "join_type": "LEFT JOIN",
+    "join_on": "users.id = orders.user_id",
+    "description": "Link users to their purchase history."
+  }
+]
