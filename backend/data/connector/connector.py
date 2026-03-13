@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy import text, inspect
 from sqlalchemy.engine import create_engine
-from backend.database.connection_pool_manager import pool_manager
+from backend.data.pool.manager import pool_manager
 
 logger = logging.getLogger(__name__)
 

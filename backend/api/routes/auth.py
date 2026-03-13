@@ -11,8 +11,8 @@ from backend.api.models.responses import LoginResponse, StatusResponse, UserResp
 from backend.security.jwt_auth import create_access_token, get_current_user
 from backend.security.hashing import hash_password, verify_password
 from backend.config.settings import settings
-from backend.database.session import get_db
-from backend.crud.user import get_user_by_email, create_user
+from backend.data.pool.session import get_db
+from backend.security.user import get_user_by_email, create_user
 from backend.models.user import User
 
 logger = logging.getLogger(__name__)

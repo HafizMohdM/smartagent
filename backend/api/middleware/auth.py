@@ -10,6 +10,7 @@ from typing import Optional
 
 import jwt
 from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -63,16 +64,29 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        # Extract Bearer token
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        try:
+            # Extract Bearer token
+            auth_header = request.headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
+                raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-        token = auth_header.split(" ", 1)[1]
-        payload = decode_access_token(token)
+            token = auth_header.split(" ", 1)[1]
+            payload = decode_access_token(token)
 
-        # Inject user info into request state
-        request.state.user_id = payload.get("sub", "unknown")
-        request.state.session_id = payload.get("session_id", "")
+            # Inject user info into request state
+            request.state.user_id = payload.get("sub", "unknown")
+            request.state.session_id = payload.get("session_id", "")
 
-        return await call_next(request)
+            return await call_next(request)
+
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in auth middleware")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Internal auth error: {str(e)}"},
+            )

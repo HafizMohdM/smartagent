@@ -1,4 +1,4 @@
 # Memory Module
-from backend.memory.session_manager import SessionManager
+from backend.memory.session.manager import SessionManager
 
 __all__ = ["SessionManager"]

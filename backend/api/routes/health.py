@@ -33,7 +33,7 @@ async def health_check(req: Request):
         services["redis"] = "unhealthy"
 
     # Check registered tools
-    from backend.tools.registry import ToolRegistry
+    from backend.agent.tools.registry import ToolRegistry
     registry = ToolRegistry()
     services["tools"] = f"{registry.count} registered"
 

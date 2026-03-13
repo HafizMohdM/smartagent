@@ -10,6 +10,15 @@ Boots up the FastAPI server with:
   - All API route modules
 """
 
+import os
+import sys
+
+# Add project root to sys.path to support imports from 'backend' package
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
 import logging
 from contextlib import asynccontextmanager
 
@@ -19,10 +28,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config.settings import settings
 from backend.api.middleware.auth import AuthMiddleware
 from backend.api.routes import auth, services, chat, health, connections, queries
-from backend.memory.session_manager import SessionManager
+from backend.memory.session.manager import SessionManager
 from backend.agent.orchestrator import AgentOrchestrator
-from backend.tools.registry import ToolRegistry
-from backend.services.database.tool import DatabaseTool
+from backend.agent.tools.registry import ToolRegistry
+from backend.agent.tools.database_tool import DatabaseTool
 
 # ── Logging ────────────────────────────────────────────────────────
 
@@ -81,10 +90,10 @@ async def lifespan(app: FastAPI):
 
     # 6. Seed default admin user if none exist
     try:
-        from backend.database.session import get_db
-        from backend.crud.user import get_user_by_email, create_user
+        from backend.data.pool.session import get_db
+        from backend.security.user import get_user_by_email, create_user
         from backend.security.hashing import hash_password
-        from backend.database.engine import async_session_maker
+        from backend.data.pool.engine import async_session_maker
 
         async with async_session_maker() as db:
             existing = await get_user_by_email(db, "admin@example.com")
