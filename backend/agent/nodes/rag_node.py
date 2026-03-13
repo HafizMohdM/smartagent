@@ -21,7 +21,7 @@ async def rag_node(state: AgentState) -> Dict[str, Any]:
 
     try:
         # Initialise services
-        vector_mgr = VectorManager(store_name="schemas")
+        vector_mgr = VectorManager(persist_directory="./vector_store/schemas")
         embedding_svc = EmbeddingService()
         retriever = SchemaRetriever(vector_mgr, embedding_svc)
         

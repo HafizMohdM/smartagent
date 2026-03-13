@@ -15,7 +15,7 @@ class SemanticCache:
     
     def __init__(self, embedding_service: EmbeddingService, threshold: float = 0.15):
         # Initialise with a dedicated directory for cache
-        self.vector_manager = VectorManager(store_name="semantic_cache")
+        self.vector_manager = VectorManager(persist_directory="./vector_store/cache")
         self.embedding_service = embedding_service
         self.threshold = threshold # L2 distance threshold for "hit"
 

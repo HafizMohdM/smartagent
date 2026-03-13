@@ -24,7 +24,7 @@ class SemanticManager:
             os.makedirs(base_path)
             
         # Vector store for searching metrics by description/intent
-        self.vector_manager = VectorManager(store_name="metrics", base_path="./vector_store")
+        self.vector_manager = VectorManager(persist_directory=os.path.join(base_path, "index"))
         self.embedding_service = EmbeddingService()
         
         # Structured stores for entities and relationships
@@ -64,7 +64,7 @@ class SemanticManager:
         self.metrics[metric.name] = metric
         
         # Index for semantic search
-        embedding = await self.embedding_service.get_embeddings(
+        embedding = await self.embedding_service.aembed_query(
             f"{metric.name}: {metric.description}"
         )
         self.vector_manager.add_vectors(
@@ -76,7 +76,7 @@ class SemanticManager:
 
     async def find_metrics(self, query: str, limit: int = 3) -> List[MetricDefinition]:
         """Find the most relevant metrics for a natural language intent."""
-        embedding = await self.embedding_service.get_embeddings(query)
+        embedding = await self.embedding_service.aembed_query(query)
         results = self.vector_manager.search(np.array(embedding), k=limit)
         
         found = []
