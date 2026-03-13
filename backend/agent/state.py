@@ -35,14 +35,19 @@ class AgentState(TypedDict, total=False):
     # Final natural-language response to the user
     final_response: str
 
-    # Iteration counter to prevent infinite loops
-    iteration_count: int
 
     # Whether the evaluator decided the result is satisfactory
     is_complete: bool
 
-    # Context retrieved from the Schema-RAG system
-    schema_context: str
-
+    # Execution Budget and Tracking
+    retry_count: int
+    token_usage: int
+    execution_count: int
+    max_retries: int
+    
     # Error message, if any
     error: Optional[str]
+
+    # Trace and Telemetry
+    trace_id: str
+    node_telemetry: Dict[str, Any] # Store per-node latency and tokens

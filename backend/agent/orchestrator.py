@@ -5,16 +5,19 @@ with conditional retry edges. This is the central brain of the platform.
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from langgraph.graph import StateGraph, END
 
 from backend.agent.state import AgentState
-from backend.agent.nodes.planner import planner_node
-from backend.agent.nodes.tool_selector import tool_selector_node
-from backend.agent.nodes.executor import executor_node
-from backend.agent.nodes.evaluator import evaluator_node
-from backend.agent.nodes.rag_node import rag_node
+from backend.agent.nodes import (
+    planner_node,
+    tool_selector_node,
+    executor_node,
+    evaluator_node,
+    semantic_node
+)
 from backend.memory.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -24,23 +27,32 @@ def _should_retry(state: AgentState) -> str:
     """Conditional edge: route back to planner on retry, or finish."""
     if state.get("is_complete", True):
         return "end"
+    
+    # Bounded retry logic
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", 3)
+    
+    if retry_count >= max_retries:
+        logger.warning(f"Max retries ({max_retries}) reached in graph edge. Terminating.")
+        return "end"
+        
     return "planner"
 
 
 def build_agent_graph() -> StateGraph:
-    """Construct the LangGraph state graph for agent orchestration."""
+    """Construct the LangGraph state graph for agent orchestration with Semantic SDL."""
     graph = StateGraph(AgentState)
 
     # ── Add nodes ──────────────────────────────────────────────────
-    graph.add_node("rag", rag_node)
+    graph.add_node("semantic", semantic_node)
     graph.add_node("planner", planner_node)
     graph.add_node("tool_selector", tool_selector_node)
     graph.add_node("executor", executor_node)
     graph.add_node("evaluator", evaluator_node)
 
     # ── Define edges ───────────────────────────────────────────────
-    graph.set_entry_point("rag")
-    graph.add_edge("rag", "planner")
+    graph.set_entry_point("semantic")
+    graph.add_edge("semantic", "planner")
     graph.add_edge("planner", "tool_selector")
     graph.add_edge("tool_selector", "executor")
     graph.add_edge("executor", "evaluator")
@@ -102,10 +114,15 @@ class AgentOrchestrator:
             "tool_params": {},
             "tool_result": {},
             "final_response": "",
-            "iteration_count": 0,
             "is_complete": False,
             "schema_context": "",
+            "retry_count": 0,
+            "token_usage": 0,
+            "execution_count": 0,
+            "max_retries": 3, # Enterprise SLA: Max 3 retries
             "error": None,
+            "trace_id": f"tr_{session_id}_{int(time.time())}",
+            "node_telemetry": {},
         }
 
         logger.info(f"Running agent for session {session_id}: {query[:80]}...")
