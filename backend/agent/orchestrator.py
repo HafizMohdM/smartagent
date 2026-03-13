@@ -14,7 +14,8 @@ from backend.agent.nodes.planner import planner_node
 from backend.agent.nodes.tool_selector import tool_selector_node
 from backend.agent.nodes.executor import executor_node
 from backend.agent.nodes.evaluator import evaluator_node
-from backend.memory.session_manager import SessionManager
+from backend.agent.nodes.rag_node import rag_node
+from backend.memory.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,15 @@ def build_agent_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     # ── Add nodes ──────────────────────────────────────────────────
+    graph.add_node("rag", rag_node)
     graph.add_node("planner", planner_node)
     graph.add_node("tool_selector", tool_selector_node)
     graph.add_node("executor", executor_node)
     graph.add_node("evaluator", evaluator_node)
 
     # ── Define edges ───────────────────────────────────────────────
-    graph.set_entry_point("planner")
+    graph.set_entry_point("rag")
+    graph.add_edge("rag", "planner")
     graph.add_edge("planner", "tool_selector")
     graph.add_edge("tool_selector", "executor")
     graph.add_edge("executor", "evaluator")
@@ -101,6 +104,7 @@ class AgentOrchestrator:
             "final_response": "",
             "iteration_count": 0,
             "is_complete": False,
+            "schema_context": "",
             "error": None,
         }
 

@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict
 
 from backend.agent.state import AgentState
-from backend.tools.registry import ToolRegistry
+from backend.agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,7 @@ from pydantic import SecretStr
 
 from backend.agent.state import AgentState
 from backend.config.settings import settings
-from backend.tools.registry import ToolRegistry
+from backend.agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 

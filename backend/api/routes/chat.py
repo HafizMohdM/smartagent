@@ -16,11 +16,11 @@ from backend.api.models.responses import (
     ChatMessageItemResponse,
     ChatMessageSendResponse,
 )
-from backend.database.session import get_db
+from backend.data.pool.session import get_db
 from backend.security.jwt_auth import get_current_user
 from backend.models.user import User
-from backend.crud.connection import get_connection
-from backend.crud.chat import (
+from backend.data.connector.crud import get_connection
+from backend.memory.summary.chat import (
     get_or_create_session,
     get_session_with_messages,
     get_session_messages,

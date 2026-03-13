@@ -7,7 +7,7 @@ import logging
 import time
 from typing import Any, Dict
 
-from backend.services.database.connector import DatabaseConnector
+from backend.data.connector.connector import DatabaseConnector
 
 logger = logging.getLogger(__name__)
 

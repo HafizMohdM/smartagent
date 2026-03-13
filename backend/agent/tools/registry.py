@@ -9,7 +9,7 @@ Adding a new service = creating a new BaseTool subclass and calling
 import logging
 from typing import Dict, List, Optional
 
-from backend.tools.base import BaseTool
+from .base import BaseTool
 
 logger = logging.getLogger(__name__)
 

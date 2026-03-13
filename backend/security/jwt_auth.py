@@ -9,8 +9,8 @@ import jwt
 from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config.settings import settings
-from backend.database.session import get_db
-from backend.crud.user import get_user_by_email
+from backend.data.pool.session import get_db
+from backend.security.user import get_user_by_email
 from backend.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")

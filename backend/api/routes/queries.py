@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.models.requests import SavedQueryCreateRequest
 from backend.api.models.responses import SavedQueryResponse, StatusResponse
-from backend.database.session import get_db
+from backend.data.pool.session import get_db
 from backend.security.jwt_auth import get_current_user
 from backend.models.user import User
-from backend.crud.query import save_query, list_saved_queries, delete_query
+from backend.data.executor.crud import save_query, list_saved_queries, delete_query
 
 router = APIRouter(prefix="/api/queries", tags=["Saved Queries"])
 

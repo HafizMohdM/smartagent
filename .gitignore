@@ -40,3 +40,9 @@ backend/alembic/versions/__pycache__/
 
 # Gemini
 .gemini/
+
+# Vector Stores
+backend/chroma_db/
+backend/faiss_store/
+faiss_store/
+chroma_db/

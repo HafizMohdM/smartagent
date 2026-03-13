@@ -41,5 +41,8 @@ class AgentState(TypedDict, total=False):
     # Whether the evaluator decided the result is satisfactory
     is_complete: bool
 
+    # Context retrieved from the Schema-RAG system
+    schema_context: str
+
     # Error message, if any
     error: Optional[str]

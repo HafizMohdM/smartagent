@@ -12,12 +12,12 @@ orchestrator can discover and invoke it automatically.
 import logging
 from typing import Any, Dict
 
-from backend.tools.base import BaseTool, ToolResult
-from backend.services.database.connector import DatabaseConnector
-from backend.services.database.sql_generator import SQLGenerator
-from backend.services.database.sql_validator import SQLValidator
-from backend.services.database.sql_executor import SQLExecutor
-from backend.memory.session_manager import SessionManager
+from .base import BaseTool, ToolResult
+from backend.data.connector.connector import DatabaseConnector
+from backend.data.executor.generator import SQLGenerator
+from backend.data.executor.validator import SQLValidator
+from backend.data.executor.executor import SQLExecutor
+from backend.memory.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
