@@ -4,6 +4,8 @@ Takes the database schema and user question, returns a SQL SELECT statement.
 """
 
 import logging
+import re
+from typing import Set
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -51,7 +53,14 @@ class SQLGenerator:
         Returns:
             A SQL SELECT string.
         """
-        schema_text = self._format_schema(schema)
+        # Prune schema if it's too large to fit in the prompt comfortably
+        schema_to_use = schema
+        if len(schema) > 15:
+            logger.info(f"Large schema detected ({len(schema)} tables). Pruning for prompt...")
+            schema_to_use = self._prune_schema(user_query, schema)
+            logger.info(f"Pruned schema to {len(schema_to_use)} relevant tables.")
+
+        schema_text = self._format_schema(schema_to_use)
 
         messages = [
             SystemMessage(content=SQL_GENERATION_PROMPT.format(schema=schema_text)),
@@ -69,6 +78,57 @@ class SQLGenerator:
 
         logger.info(f"Generated SQL: {sql[:200]}")
         return sql
+
+    def _prune_schema(self, user_query: str, schema: dict) -> dict:
+        """
+        Select only the tables likely to be relevant to the user query.
+        Uses keyword matching and foreign key expansion.
+        """
+        relevant_tables: Set[str] = set()
+        query_lower = user_query.lower()
+
+        # 1. Direct keyword match with table names
+        for table_name in schema.keys():
+            # Match whole words to avoid partial matches (e.g., 'user' matching 'users_log')
+            if re.search(rf"\b{re.escape(table_name.lower())}\b", query_lower):
+                relevant_tables.add(table_name)
+        
+        # 2. Match with column names (if query is specific)
+        if not relevant_tables:
+            for table_name, info in schema.items():
+                for col in info.get("columns", []):
+                    if re.search(rf"\b{re.escape(col['name'].lower())}\b", query_lower):
+                        relevant_tables.add(table_name)
+                        break
+
+        # 3. Expansion: add tables related via foreign keys to the already selected tables
+        # This helps the LLM generate JOINs even if the related table isn't mentioned by name.
+        expanded_tables = set(relevant_tables)
+        for table_name in relevant_tables:
+            # Outbound FKs
+            fks = schema[table_name].get("foreign_keys", [])
+            for fk in fks:
+                referred = fk.get("referred_table")
+                if referred in schema:
+                    expanded_tables.add(referred)
+            
+            # Inbound FKs (Look through all other tables for FKs pointing to this one)
+            for other_table, other_info in schema.items():
+                for other_fk in other_info.get("foreign_keys", []):
+                    if other_fk.get("referred_table") == table_name:
+                        expanded_tables.add(other_table)
+
+        # 4. Final Fallback: if still nothing found, return a limited set of table names
+        # so the LLM can at least try to guess or ask for more info.
+        if not expanded_tables:
+            logger.warning("No relevant tables found via keyword matching. Returning table names only.")
+            # Special case: return just the table names instead of full definitions if huge
+            if len(schema) > 50:
+                return {name: {"columns": [], "note": "Empty columns due to pruning"} for name in list(schema.keys())[:50]}
+            return schema
+
+        # Return only the subset of the schema
+        return {k: v for k, v in schema.items() if k in expanded_tables}
 
     @staticmethod
     def _format_schema(schema: dict) -> str:
