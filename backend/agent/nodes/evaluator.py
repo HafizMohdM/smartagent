@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 from backend.agent.state import AgentState
 from backend.config.settings import settings
+from backend.agent.utils import parse_json_markdown
 from backend.agent.utils.observability import ObservabilityManager
 
 logger = logging.getLogger(__name__)
@@ -54,9 +55,9 @@ def _summarize_result_for_llm(result: Dict[str, Any]) -> str:
     if not isinstance(data, dict) or "rows" not in data:
         return json.dumps(result, default=str)
     
-    # Take only the first 10 rows for the LLM
+    # Take first 50 rows for the LLM (increased from 10 to support larger requests)
     rows = data.get("rows", [])
-    truncated_rows = rows[:10]
+    truncated_rows = rows[:50]
     
     summary = {
         "success": True,
@@ -106,8 +107,11 @@ async def evaluator_node(state: AgentState) -> Dict[str, Any]:
     response = await llm.ainvoke(messages)
     
     try:
-        evaluation = json.loads(str(response.content))
-    except json.JSONDecodeError:
+        evaluation = parse_json_markdown(str(response.content))
+        if evaluation is None:
+            raise ValueError("Evaluator output could not be parsed as JSON")
+    except Exception as e:
+        logger.error(f"Evaluator parsing error: {e}. Raw content: {response.content}")
         logger.error(f"Evaluator returned invalid JSON: {response.content}")
         evaluation = {
             "is_complete": True,

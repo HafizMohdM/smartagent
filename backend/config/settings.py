@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # --- Database ---
     APP_DATABASE_URL: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/ai_agent_db",
+        default="postgresql+asyncpg://postgres:root@localhost:5432/ai_agent_db",
         description="Application database connection URL"
     )
 
@@ -53,9 +53,11 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
     class Config:
-        env_file = ".env"
+        import os
+        env_file = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
         env_file_encoding = "utf-8"
         case_sensitive = True
+
 
 
 settings = Settings()
