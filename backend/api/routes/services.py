@@ -62,7 +62,10 @@ async def connect_database(request: DatabaseConnectionRequest, req: Request):
     """
     session_id = getattr(req.state, "session_id", None)
     if not session_id:
-        raise HTTPException(status_code=400, detail="No active session. Please login first.")
+        user_id = getattr(req.state, "user_id", "unknown")
+        # For SSO users without a session ID in JWT/Header, we can use a stable one based on user_id
+        session_id = f"sso_{user_id}"
+        logger.info(f"Using fallback SSO session {session_id} for user {user_id}")
 
     try:
         # Get the database tool from the app state

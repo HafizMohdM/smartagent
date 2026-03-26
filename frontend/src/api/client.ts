@@ -1,11 +1,16 @@
 // Centralised API client — all backend calls in one place.
 
-const BASE_URL = 'http://localhost:8000';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001';
 
 let authToken: string | null = null;
+let currentSessionId: string | null = null;
 
 export function setToken(token: string | null) {
   authToken = token;
+}
+
+export function setSessionId(sessionId: string | null) {
+  currentSessionId = sessionId;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -16,11 +21,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
+  if (currentSessionId) {
+    headers['X-Session-ID'] = currentSessionId;
+  }
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
 
   if (!res.ok) {
-    if (res.status === 401 || res.status === 404) {
+    if (res.status === 401) {
       window.dispatchEvent(new Event('auth_error'));
     }
     const err = await res.json().catch(() => ({ detail: res.statusText }));

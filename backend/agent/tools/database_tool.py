@@ -61,6 +61,27 @@ class DatabaseTool(BaseTool):
         # 1. Get the connector for this session
         connector = self._connectors.get(session_id)
         if connector is None or not connector.is_connected:
+            # Try auto-connecting to HRMS database from settings
+            from backend.config.settings import settings
+            logger.info(f"Auto-connecting to HRMS database for session {session_id}")
+            try:
+                await self.connect(
+                    session_id=session_id,
+                    host=settings.HRMS_DB_HOST,
+                    port=settings.HRMS_DB_PORT,
+                    database=settings.HRMS_DB_NAME,
+                    username=settings.HRMS_DB_USER,
+                    password=settings.HRMS_DB_PASS
+                )
+                connector = self._connectors.get(session_id)
+            except Exception as e:
+                logger.error(f"Auto-connection to HRMS DB failed: {e}")
+                return ToolResult(
+                    success=False,
+                    error=f"No database connection found and auto-connection failed. Error: {str(e)}",
+                )
+
+        if connector is None or not connector.is_connected:
             return ToolResult(
                 success=False,
                 error="No database connection found. Please connect to a database first.",

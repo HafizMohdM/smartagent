@@ -42,7 +42,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 def decode_access_token(token: str) -> dict:
     """Decode and validate a JWT token. Raises on failure."""
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        # Add fallback for user_id/email if 'sub' is missing (Django tokens)
+        if "sub" not in payload:
+            payload["sub"] = payload.get("user_id") or payload.get("email") or "unknown"
+        return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.InvalidTokenError:
@@ -74,9 +78,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             payload = decode_access_token(token)
 
             # Inject user info into request state
-            request.state.user_id = payload.get("sub", "unknown")
-            request.state.session_id = payload.get("session_id", "")
-
+            # Ensure user_id is a string and handle Django 'user_id' claim
+            request.state.user_id = str(payload.get("sub") or payload.get("user_id") or "unknown")
+            
+            # Use session_id from JWT, or from X-Session-ID header (for SSO/Iframe)
+            request.state.session_id = payload.get("session_id") or request.headers.get("X-Session-ID") or ""
+            
             return await call_next(request)
 
         except HTTPException as exc:

@@ -4,6 +4,7 @@ plus the original agent chat endpoint.
 """
 
 import logging
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -215,8 +216,22 @@ async def chat(request: ChatRequest, req: Request):
 
     session_mgr = req.app.state.session_manager
     session = await session_mgr.get_session(session_id)
+    
+    # If session doesn't exist but we have a valid user from the token, auto-create it
     if session is None:
-        raise HTTPException(status_code=404, detail="Session not found. Please login first.")
+        user_id = getattr(req.state, "user_id", "unknown")
+        logger.info(f"Auto-creating missing session {session_id} for user {user_id}")
+        # We manually use the requested session_id to match the frontend expectation
+        session_data = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "messages": [],
+            "connections": {},
+            "metadata": {"auto_created": True},
+        }
+        await session_mgr._store_session(session_id, session_data)
+        session = session_data
 
     try:
         orchestrator = req.app.state.orchestrator
@@ -248,4 +263,6 @@ async def get_chat_history(session_id: str, req: Request, limit: int = 50):
     """
     session_mgr = req.app.state.session_manager
     history = await session_mgr.get_history(session_id, limit=limit)
+    
+    # If history is empty, it might be a new auto-created session or truly empty
     return {"session_id": session_id, "messages": history, "count": len(history)}

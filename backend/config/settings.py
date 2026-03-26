@@ -11,7 +11,14 @@ from typing import List
 class Settings(BaseSettings):
     """Global application settings sourced from .env file."""
 
-    # --- LLM ---
+    # --- HRMS Database (Direct Connection) ---
+    HRMS_DB_HOST: str = Field(default="localhost")
+    HRMS_DB_PORT: int = Field(default=5432)
+    HRMS_DB_NAME: str = Field(default="horilla_main")
+    HRMS_DB_USER: str = Field(default="postgres")
+    HRMS_DB_PASS: str = Field(default="root")
+
+    # --- LangChain / LLM ---
     OPENAI_API_KEY: str = Field(default="", description="OpenAI API key")
     LLM_MODEL: str = Field(default="gpt-4o", description="LLM model name")
 
@@ -41,10 +48,10 @@ class Settings(BaseSettings):
 
     # --- Server ---
     HOST: str = Field(default="0.0.0.0")
-    PORT: int = Field(default=8000)
+    PORT: int = Field(default=8001)
     LOG_LEVEL: str = Field(default="info")
     CORS_ORIGINS: str = Field(
-        default="http://localhost:3000,http://localhost:5173",
+        default="http://localhost:3000,http://localhost:5173,http://localhost:5174",
         description="Comma-separated allowed CORS origins",
     )
 

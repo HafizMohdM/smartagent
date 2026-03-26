@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-import { setToken } from '../api/client';
+import { setToken, setSessionId } from '../api/client';
 
 const STORAGE_KEY = 'ai_agent_auth';
 
@@ -12,6 +12,7 @@ function loadStoredAuth(): Partial<AuthState> {
         const { token, sessionId, username, dbConnected } = JSON.parse(raw);
         if (token && sessionId) {
             setToken(token);
+            setSessionId(sessionId);
             return { token, sessionId, username, dbConnected: dbConnected ?? false, currentView: 'chat' };
         }
     } catch { /* ignore */ }
@@ -69,8 +70,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return () => window.removeEventListener('auth_error', onAuthError);
     }, []);
 
+    // Intercept token and sessionId from URL for iframe integration
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const urlToken = params.get('token');
+        const urlSessionId = params.get('sessionId');
+        const urlView = params.get('view') as View;
+        
+        if (urlToken) {
+            setToken(urlToken);
+            const sid = urlSessionId || (Math.random().toString(36).substring(2) + Date.now().toString(36));
+            setSessionId(sid);
+            setState(s => ({ 
+                ...s,
+                token: urlToken, 
+                sessionId: sid, 
+                username: params.get('username') || 'HRMS User',
+                dbConnected: true, // Auto-connect for iframe
+                currentView: urlView || 'chat'
+            }));
+            
+            // Clean up URL parameters to keep it clean
+            const newUrl = window.location.pathname;
+            window.history.replaceState({}, document.title, newUrl);
+        }
+    }, []);
+
     const handleLoginSuccess = (token: string, sessionId: string, username: string) => {
         setToken(token);
+        setSessionId(sessionId);
         setState({ token, sessionId, username, dbConnected: false, currentView: 'setup' });
     };
 
@@ -84,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const handleLogout = () => {
         setToken(null);
+        setSessionId(null);
         setState({ token: null, sessionId: null, username: null, dbConnected: false, currentView: 'login' });
     };
 
