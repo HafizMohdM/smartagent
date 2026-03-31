@@ -44,10 +44,13 @@ export default function Header() {
                 )}
 
                 <span className="header-user">👤 {username}</span>
-
-                <button id="logout-btn" className="btn-logout" onClick={handleLogoutClick}>
-                    Logout
-                </button>
+                
+                {/* Hide logout button if we are embedded in an iframe (SSO) */}
+                {window.self === window.top && (
+                    <button id="logout-btn" className="btn-logout" onClick={handleLogoutClick}>
+                        Logout
+                    </button>
+                )}
             </div>
         </header>
     );
