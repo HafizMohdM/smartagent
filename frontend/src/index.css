@@ -435,6 +435,29 @@ input::placeholder {
   margin-bottom: 28px;
 }
 
+.empty-icon-container {
+  margin-bottom: 24px;
+  opacity: 0.8;
+}
+
+.btn-connect-empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.btn-connect-empty:hover {
+  background: var(--bg-elevated);
+  border-color: var(--text-muted);
+}
+
 .suggestions {
   display: flex;
   flex-wrap: wrap;

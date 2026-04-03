@@ -39,10 +39,6 @@ export default function ChatView() {
     // Connection & Onboarding state
     const [connections, setConnections] = useState<DBConnectionItem[]>([]);
     const [loadingConnections, setLoadingConnections] = useState(true);
-    const [showOnboarding, setShowOnboarding] = useState(false);
-    const [alwaysShowIntro, setAlwaysShowIntro] = useState<boolean>(() => {
-        return localStorage.getItem('always_show_connection_intro') === 'true';
-    });
 
     // Save Query state
     const [msgToSave, setMsgToSave] = useState<Message | null>(null);
@@ -52,12 +48,7 @@ export default function ChatView() {
     const bottomRef = useRef<HTMLDivElement>(null);
     const autoExecDone = useRef(false);
 
-    // Initial checks: Onboarding & Connections
     useEffect(() => {
-        const hasSeenOnboarding = localStorage.getItem('has_seen_connection_onboarding');
-        if (alwaysShowIntro || !hasSeenOnboarding) {
-            setShowOnboarding(true);
-        }
 
         getConnections()
             .then(data => {
@@ -65,18 +56,8 @@ export default function ChatView() {
             })
             .catch(() => setConnections([]))
             .finally(() => setLoadingConnections(false));
-    }, [alwaysShowIntro]);
+    }, []);
 
-    const closeOnboarding = () => {
-        setShowOnboarding(false);
-        localStorage.setItem('has_seen_connection_onboarding', 'true');
-    };
-
-    const toggleAlwaysShowIntro = () => {
-        const newState = !alwaysShowIntro;
-        setAlwaysShowIntro(newState);
-        localStorage.setItem('always_show_connection_intro', String(newState));
-    };
 
     // Load all chat sessions for this user
     const loadSessions = async () => {
@@ -225,9 +206,7 @@ export default function ChatView() {
 
     const suggestions = dbSuggestions;
 
-    // Modal Visibility logic
     const isConnectionRequired = !loadingConnections && connections.length === 0;
-    const shouldShowPopup = showOnboarding || isConnectionRequired;
 
     return (
         <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
@@ -301,18 +280,6 @@ export default function ChatView() {
                     </div>
                 )}
 
-                {/* Settings / Toggles */}
-                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--border-color)', backgroundColor: 'rgba(0,0,0,0.02)' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-color)', opacity: 0.8 }}>
-                        <input 
-                            type="checkbox" 
-                            checked={alwaysShowIntro} 
-                            onChange={toggleAlwaysShowIntro}
-                            style={{ cursor: 'pointer' }}
-                        />
-                        Always show connection popup
-                    </label>
-                </div>
 
                 {/* Back button */}
                 <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)' }}>
@@ -327,21 +294,43 @@ export default function ChatView() {
                 <div className="chat-messages">
                     {!loadingHistory && messages.length === 0 && (
                         <div className="empty-state">
-                            <div className="empty-icon">📊</div>
-                            <h2>AI Analyst</h2>
-                            <p>
-                                {isConnectionRequired 
-                                    ? 'Integrate your data to start AI analysis. Please connect a database to continue.'
-                                    : 'Ask me anything about your database. I can help with SQL queries, data visualization, and schema analysis.'}
-                            </p>
-                            {!isConnectionRequired && suggestions.length > 0 && (
-                                <div className="suggestions">
-                                    {suggestions.map(s => (
-                                        <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>
-                                            {s}
-                                        </button>
-                                    ))}
-                                </div>
+                            {isConnectionRequired ? (
+                                <>
+                                    <div className="empty-icon-container">
+                                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <rect x="5" y="4" width="14" height="16" rx="1" stroke="#1e293b" strokeWidth="2" />
+                                            <path d="M5 9h14M5 15h14" stroke="#1e293b" strokeWidth="2" />
+                                            <path d="M11 6.5h2M11 12.5h2M11 18.5h2" stroke="#1e293b" strokeWidth="2" strokeLinecap="round" />
+                                        </svg>
+                                    </div>
+                                    <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b', marginBottom: '8px' }}>No connections yet</h2>
+                                    <p style={{ color: '#64748b', fontSize: '1rem', maxWidth: '420px', margin: '0 auto 24px', lineHeight: '1.5' }}>
+                                        Add a database connection to let the AI agent query your data.
+                                    </p>
+                                    <button 
+                                        className="btn-connect-empty"
+                                        onClick={() => navigate('/connections')}
+                                    >
+                                        Connect a Database
+                                    </button>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="empty-icon">📊</div>
+                                    <h2>AI Analyst</h2>
+                                    <p>
+                                        Ask me anything about your database. I can help with SQL queries, data visualization, and schema analysis.
+                                    </p>
+                                    {suggestions.length > 0 && (
+                                        <div className="suggestions">
+                                            {suggestions.map(s => (
+                                                <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>
+                                                    {s}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </div>
                     )}
@@ -395,41 +384,6 @@ export default function ChatView() {
                 </form>
             </div>
 
-            {/* Strict Onboarding / Connection Modal */}
-            {shouldShowPopup && (
-                <div className="modal-overlay">
-                    <div className="modal-content">
-                        <span className="modal-icon">{isConnectionRequired ? '⚠️' : '🤖'}</span>
-                        <h2>{isConnectionRequired ? 'Database Required' : 'Database Awareness'}</h2>
-                        <p style={{ fontWeight: 500, fontSize: '1.1rem', marginBottom: '1.5rem' }}>
-                            Please connect a database to use AI chat
-                        </p>
-                        
-                        <div className="modal-actions" style={{ flexDirection: 'column', width: '100%' }}>
-                            <button
-                                className="btn-accent"
-                                style={{ width: '100%', marginBottom: '0.5rem' }}
-                                onClick={() => {
-                                    closeOnboarding();
-                                    navigate('/connections');
-                                }}
-                            >
-                                Connect Database
-                            </button>
-                            
-                            <button
-                                className="btn-ghost"
-                                style={{ width: '100%' }}
-                                onClick={closeOnboarding}
-                                disabled={isConnectionRequired}
-                                title={isConnectionRequired ? "Connect a database first" : "Continue to chat"}
-                            >
-                                Continue
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* Save Query Modal */}
             {msgToSave && (
