@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
     getConnections, createConnection, deleteConnection,
@@ -10,7 +11,8 @@ import LoadingDots from '../components/LoadingDots';
 type Tab = 'connections' | 'queries' | 'profile';
 
 export default function DashboardView() {
-    const { username, handleGoToSetup } = useAuth();
+    const { username, isAdmin } = useAuth();
+    const navigate = useNavigate();
     const [activeTab, setActiveTab] = useState<Tab>('connections');
 
     return (
@@ -40,16 +42,22 @@ export default function DashboardView() {
                         <span>Profile</span>
                     </button>
                 </nav>
-                <div className="sidebar-footer">
-                    <button className="btn-ghost-sm" onClick={handleGoToSetup}>
-                        + Quick Connect DB
+                {/* Chat shortcut always visible */}
+                <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', marginTop: 'auto' }}>
+                    <button
+                        id="open-chat-btn"
+                        className="btn-accent"
+                        style={{ width: '100%', padding: '0.6rem' }}
+                        onClick={() => navigate('/chat')}
+                    >
+                        💬 Open Chat
                     </button>
                 </div>
             </aside>
             <section className="dashboard-content">
-                {activeTab === 'connections' && <ConnectionsPanel />}
+                {activeTab === 'connections' && <ConnectionsPanel isAdmin={isAdmin} />}
                 {activeTab === 'queries' && <QueriesPanel />}
-                {activeTab === 'profile' && <ProfilePanel username={username} />}
+                {activeTab === 'profile' && <ProfilePanel username={username} isAdmin={isAdmin} />}
             </section>
         </div>
     );
@@ -57,7 +65,8 @@ export default function DashboardView() {
 
 /* ── Connections Panel ──────────────────────────────────────────── */
 
-function ConnectionsPanel() {
+function ConnectionsPanel({ isAdmin }: { isAdmin: boolean }) {
+    const { setHasDatabaseConnection } = useAuth();
     const [connections, setConnections] = useState<DBConnectionItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
@@ -68,8 +77,11 @@ function ConnectionsPanel() {
         try {
             const data = await getConnections();
             setConnections(data);
-        } catch { setConnections([]); }
-        finally { setLoading(false); }
+            setHasDatabaseConnection(data.length > 0);
+        } catch {
+            setConnections([]);
+            setHasDatabaseConnection(false);
+        } finally { setLoading(false); }
     };
 
     useEffect(() => { fetchConnections(); }, []);
@@ -77,7 +89,11 @@ function ConnectionsPanel() {
     const handleDelete = async (id: string) => {
         try {
             await deleteConnection(id);
-            setConnections(c => c.filter(x => x.id !== id));
+            setConnections(c => {
+                const newC = c.filter(x => x.id !== id);
+                setHasDatabaseConnection(newC.length > 0);
+                return newC;
+            });
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Delete failed');
         }
@@ -88,16 +104,30 @@ function ConnectionsPanel() {
             <div className="panel-header">
                 <div>
                     <h2>Database Connections</h2>
-                    <p className="panel-subtitle">Manage your database connections for the AI agent</p>
+                    <p className="panel-subtitle">
+                        {isAdmin
+                            ? 'Manage your database connections for the AI agent'
+                            : 'Available database connections'}
+                    </p>
                 </div>
-                <button className="btn-accent-sm" onClick={() => setShowForm(!showForm)}>
-                    {showForm ? '✕ Cancel' : '+ Add Connection'}
-                </button>
+                {/* Only admins can add connections */}
+                {isAdmin && (
+                    <button className="btn-accent-sm" onClick={() => setShowForm(!showForm)}>
+                        {showForm ? '✕ Cancel' : '+ Add Connection'}
+                    </button>
+                )}
             </div>
 
             {error && <div className="error-banner">{error}</div>}
 
-            {showForm && (
+            {/* Non-admin info banner */}
+            {!isAdmin && (
+                <div className="info-banner">
+                    ℹ️ Contact an administrator to add or remove database connections.
+                </div>
+            )}
+
+            {isAdmin && showForm && (
                 <AddConnectionForm
                     onSuccess={() => { setShowForm(false); fetchConnections(); }}
                     onCancel={() => setShowForm(false)}
@@ -106,19 +136,36 @@ function ConnectionsPanel() {
 
             {loading ? (
                 <div className="panel-loading"><LoadingDots /></div>
-            ) : connections.length === 0 ? (
-                <div className="panel-empty">
-                    <div className="empty-icon">🗄️</div>
-                    <h3>No connections yet</h3>
-                    <p>Add a database connection to let the AI agent query your data.</p>
+            ) : connections.length === 0 && !showForm ? (
+                <div className="panel-empty" style={{ textAlign: 'center', padding: '3rem 1rem' }}>
+                    <div className="empty-icon" style={{ fontSize: '3rem', marginBottom: '1rem' }}>🗄️</div>
+                    <h3 style={{ marginBottom: '0.5rem' }}>No connections yet</h3>
+                    <p style={{ color: 'var(--text-color)', opacity: 0.7, marginBottom: '1.5rem' }}>
+                        {isAdmin
+                            ? 'Add a database connection to let the AI agent query your data.'
+                            : 'Ask an administrator to add a database connection.'}
+                    </p>
+                    {isAdmin && (
+                        <button onClick={() => setShowForm(true)} className="btn-accent" style={{ padding: '0.5rem 1rem' }}>
+                            Connect a Database
+                        </button>
+                    )}
                 </div>
-            ) : (
+            ) : !showForm && (
                 <div className="cards-grid">
                     {connections.map(conn => (
                         <div key={conn.id} className="db-card">
                             <div className="db-card-header">
                                 <div className="db-card-type">{conn.db_type.toUpperCase()}</div>
-                                <button className="btn-delete" onClick={() => handleDelete(conn.id)} title="Delete">×</button>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    {isAdmin && (
+                                        <button
+                                            className="btn-delete"
+                                            onClick={() => handleDelete(conn.id)}
+                                            title="Delete connection"
+                                        >×</button>
+                                    )}
+                                </div>
                             </div>
                             <h3 className="db-card-name">{conn.connection_name}</h3>
                             <div className="db-card-details">
@@ -238,6 +285,8 @@ function QueriesPanel() {
     const [expanded, setExpanded] = useState<string | null>(null);
     const [error, setError] = useState('');
 
+    const navigate = useNavigate();
+
     const fetchQueries = async () => {
         setLoading(true);
         try {
@@ -256,6 +305,10 @@ function QueriesPanel() {
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Delete failed');
         }
+    };
+
+    const handleRun = (nlQuery: string) => {
+        navigate('/chat', { state: { prefillQuery: nlQuery } });
     };
 
     return (
@@ -289,7 +342,16 @@ function QueriesPanel() {
                                 <div className="query-meta">
                                     {q.row_count != null && <span className="query-stat">{q.row_count} rows</span>}
                                     {q.execution_time_ms != null && <span className="query-stat">{q.execution_time_ms}ms</span>}
-                                    <button className="btn-delete" onClick={(e) => { e.stopPropagation(); handleDelete(q.id); }} title="Delete">×</button>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <button 
+                                            className="btn-accent-sm" 
+                                            style={{ padding: '2px 10px', fontSize: '0.75rem' }}
+                                            onClick={(e) => { e.stopPropagation(); handleRun(q.natural_language_query); }}
+                                        >
+                                            ▶ Run
+                                        </button>
+                                        <button className="btn-delete" onClick={(e) => { e.stopPropagation(); handleDelete(q.id); }} title="Delete">×</button>
+                                    </div>
                                 </div>
                             </div>
                             {expanded === q.id && (
@@ -298,31 +360,6 @@ function QueriesPanel() {
                                         <div className="sql-label">Generated SQL</div>
                                         <pre className="sql-code">{q.generated_sql}</pre>
                                     </div>
-                                    {q.query_result_snapshot && q.query_result_snapshot.length > 0 && (
-                                        <div className="result-snapshot">
-                                            <div className="sql-label">Result Preview ({q.query_result_snapshot.length} rows)</div>
-                                            <div className="snapshot-table-wrap">
-                                                <table className="snapshot-table">
-                                                    <thead>
-                                                        <tr>
-                                                            {Object.keys(q.query_result_snapshot[0] as Record<string, unknown>).map(k => (
-                                                                <th key={k}>{k}</th>
-                                                            ))}
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {q.query_result_snapshot.slice(0, 10).map((row, i) => (
-                                                            <tr key={i}>
-                                                                {Object.values(row as Record<string, unknown>).map((v, j) => (
-                                                                    <td key={j}>{String(v)}</td>
-                                                                ))}
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    )}
                                     <div className="query-footer">
                                         <span className="db-date">Saved {new Date(q.created_at).toLocaleString()}</span>
                                     </div>
@@ -338,7 +375,7 @@ function QueriesPanel() {
 
 /* ── Profile Panel ─────────────────────────────────────────────── */
 
-function ProfilePanel({ username }: { username: string | null }) {
+function ProfilePanel({ username, isAdmin }: { username: string | null; isAdmin: boolean }) {
     return (
         <div className="panel">
             <div className="panel-header">
@@ -349,12 +386,18 @@ function ProfilePanel({ username }: { username: string | null }) {
             </div>
             <div className="profile-card">
                 <div className="profile-avatar">
-                    <span>👤</span>
+                    <span>{isAdmin ? '🛡️' : '👤'}</span>
                 </div>
                 <div className="profile-info">
                     <div className="profile-row">
                         <span className="profile-label">Email</span>
                         <span className="profile-value">{username ?? 'N/A'}</span>
+                    </div>
+                    <div className="profile-row">
+                        <span className="profile-label">Role</span>
+                        <span className={`profile-value role-badge ${isAdmin ? 'role-admin' : 'role-user'}`}>
+                            {isAdmin ? '🛡️ Admin' : '👤 User'}
+                        </span>
                     </div>
                     <div className="profile-row">
                         <span className="profile-label">Status</span>

@@ -1,48 +1,145 @@
 import { useState, useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
-import { sendMessage, getChatHistory, type HistoryMessage } from '../api/client';
-import { useAuth } from '../context/AuthContext';
+import { useNavigate, useLocation } from 'react-router-dom';
+import {
+    getChatSessions,
+    getChatSession,
+    sendDbChatMessage,
+    getConnections,
+    createSavedQuery,
+    type ChatSessionMetaResponse,
+    type ChartConfig,
+    type DBConnectionItem,
+} from '../api/client';
 import MessageBubble from '../components/MessageBubble';
 import LoadingDots from '../components/LoadingDots';
 
-interface Message {
+export interface Message {
     role: 'user' | 'assistant';
     content: string;
+    summary?: string;
+    sql?: string;
+    chart?: ChartConfig;
+    metadata?: any;
     tool_used?: string;
     timestamp: Date;
 }
 
 export default function ChatView() {
-    const { sessionId, dbConnected } = useAuth();
+    const navigate = useNavigate();
+    const location = useLocation();
+
+    // Chat state
+    const [sessions, setSessions] = useState<ChatSessionMetaResponse[]>([]);
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
-    const [historyLoaded, setHistoryLoaded] = useState(false);
-    const bottomRef = useRef<HTMLDivElement>(null);
+    const [loadingHistory, setLoadingHistory] = useState(false);
+    
+    // Connection & Onboarding state
+    const [connections, setConnections] = useState<DBConnectionItem[]>([]);
+    const [loadingConnections, setLoadingConnections] = useState(true);
+    const [showOnboarding, setShowOnboarding] = useState(false);
+    const [alwaysShowIntro, setAlwaysShowIntro] = useState<boolean>(() => {
+        return localStorage.getItem('always_show_connection_intro') === 'true';
+    });
 
-    // Load chat history on mount
+    // Save Query state
+    const [msgToSave, setMsgToSave] = useState<Message | null>(null);
+    const [saveTitle, setSaveTitle] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+
+    const bottomRef = useRef<HTMLDivElement>(null);
+    const autoExecDone = useRef(false);
+
+    // Initial checks: Onboarding & Connections
     useEffect(() => {
-        if (!sessionId) return;
-        getChatHistory(sessionId)
-            .then(res => {
-                const mapped: Message[] = res.messages.map((m: HistoryMessage) => ({
-                    role: m.role,
-                    content: m.content,
-                    timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-                }));
-                if (mapped.length > 0) setMessages(mapped);
+        const hasSeenOnboarding = localStorage.getItem('has_seen_connection_onboarding');
+        if (alwaysShowIntro || !hasSeenOnboarding) {
+            setShowOnboarding(true);
+        }
+
+        getConnections()
+            .then(data => {
+                setConnections(data);
             })
-            .catch(() => {/* no history yet — that's fine */ })
-            .finally(() => setHistoryLoaded(true));
-    }, [sessionId]);
+            .catch(() => setConnections([]))
+            .finally(() => setLoadingConnections(false));
+    }, [alwaysShowIntro]);
+
+    const closeOnboarding = () => {
+        setShowOnboarding(false);
+        localStorage.setItem('has_seen_connection_onboarding', 'true');
+    };
+
+    const toggleAlwaysShowIntro = () => {
+        const newState = !alwaysShowIntro;
+        setAlwaysShowIntro(newState);
+        localStorage.setItem('always_show_connection_intro', String(newState));
+    };
+
+    // Load all chat sessions for this user
+    const loadSessions = async () => {
+        try {
+            const res = await getChatSessions();
+            setSessions(res);
+        } catch (err) {
+            console.error('Failed to load sessions:', err);
+        }
+    };
+
+    useEffect(() => { 
+        if (connections.length > 0) {
+            loadSessions(); 
+        }
+    }, [connections]);
+
+    // Handle Prefill from Saved Queries
+    useEffect(() => {
+        if (!autoExecDone.current && location.state?.prefillQuery && connections.length > 0 && !loadingConnections) {
+            setInput(location.state.prefillQuery);
+            autoExecDone.current = true;
+            // Optionally trigger sendMsg here if you want it fully automatic
+        }
+    }, [location.state, connections, loadingConnections]);
+
+    // Load active session messages
+    useEffect(() => {
+        if (!activeSessionId) {
+            setMessages([]);
+            return;
+        }
+        setLoadingHistory(true);
+        getChatSession(activeSessionId)
+            .then(res => {
+                const mapped: Message[] = res.messages.map(m => ({
+                    role: m.role === 'agent' ? 'assistant' : 'user',
+                    content: m.message_text,
+                    sql: m.generated_sql || undefined,
+                    metadata: m.query_result_snapshot,
+                    chart: m.query_result_snapshot?.chart,
+                    timestamp: new Date(m.created_at),
+                }));
+                setMessages(mapped);
+            })
+            .catch(err => console.error('Failed to load session:', err))
+            .finally(() => setLoadingHistory(false));
+    }, [activeSessionId]);
 
     // Scroll to bottom on new message
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, loading]);
 
+    const handleNewChat = () => {
+        setActiveSessionId(null);
+        setMessages([]);
+        setInput('');
+    };
+
     const sendMsg = async () => {
         const text = input.trim();
-        if (!text || loading || !sessionId) return;
+        if (!text || loading) return;
 
         const userMsg: Message = { role: 'user', content: text, timestamp: new Date() };
         setMessages(prev => [...prev, userMsg]);
@@ -50,18 +147,33 @@ export default function ChatView() {
         setLoading(true);
 
         try {
-            const res = await sendMessage(text, sessionId);
+            const res = await sendDbChatMessage(
+                text,
+                activeSessionId,
+            );
+
+            const newSessionId = res.metadata?.session_id;
+            const isNewSession = !activeSessionId && newSessionId;
+
             const agentMsg: Message = {
                 role: 'assistant',
-                content: res.response,
-                tool_used: res.tool_used,
-                timestamp: new Date(),
+                content: res.agent_message.message_text,
+                sql: res.agent_message.generated_sql || undefined,
+                chart: res.metadata?.chart,
+                metadata: res.metadata,
+                tool_used: res.tool_used || undefined,
+                timestamp: new Date(res.agent_message.created_at || new Date()),
             };
             setMessages(prev => [...prev, agentMsg]);
+
+            if (isNewSession) {
+                setActiveSessionId(newSessionId);
+                loadSessions();
+            }
         } catch (err: unknown) {
             const errMsg: Message = {
                 role: 'assistant',
-                content: `⚠️ ${err instanceof Error ? err.message : 'Something went wrong'}`,
+                content: `🚨 ${err instanceof Error ? err.message : 'Something went wrong processing your request.'}`,
                 timestamp: new Date(),
             };
             setMessages(prev => [...prev, errMsg]);
@@ -70,84 +182,294 @@ export default function ChatView() {
         }
     };
 
-    const handleSubmit = (e: FormEvent) => {
-        e.preventDefault();
-        sendMsg();
+    const handleSaveQueryInitiate = (msg: Message) => {
+        setMsgToSave(msg);
+        const currentSession = sessions.find(s => s.session_id === activeSessionId);
+        setSaveTitle(currentSession?.session_name || `Query - ${new Date().toLocaleDateString()}`);
     };
 
-    const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMsg();
+    const confirmSaveQuery = async () => {
+        if (!msgToSave || !saveTitle) return;
+        setIsSaving(true);
+        try {
+            await createSavedQuery({
+                connection_id: connections[0]?.id || '',
+                query_name: saveTitle,
+                natural_language_query: msgToSave.content,
+                generated_sql: msgToSave.sql || '',
+                // Requirement 10: Do not store raw result data
+                query_result_snapshot: null, 
+                row_count: msgToSave.metadata?.row_count,
+            });
+            setMsgToSave(null);
+            alert('Saved to library.');
+        } catch (err) {
+            alert(`Failed to save: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        } finally {
+            setIsSaving(false);
         }
     };
 
-    const suggestions = [
+    const handleSubmit = (e: FormEvent) => { e.preventDefault(); sendMsg(); };
+
+    const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+    };
+
+    const dbSuggestions = [
         'Show me all tables in the database',
         'What are the top 10 records by date?',
         'Describe the schema of the users table',
         'Count the total number of rows',
     ];
 
+    const suggestions = dbSuggestions;
+
+    // Modal Visibility logic
+    const isConnectionRequired = !loadingConnections && connections.length === 0;
+    const shouldShowPopup = showOnboarding || isConnectionRequired;
+
     return (
-        <div className="chat-container">
-            <div className="chat-messages">
-                {historyLoaded && messages.length === 0 && (
-                    <div className="empty-state">
-                        <div className="empty-icon">💬</div>
-                        <h2>Ask anything about your data</h2>
-                        <p>
-                            {dbConnected
-                                ? 'Your database is connected. Start asking questions in natural language.'
-                                : 'No database connected yet — you can still chat with the AI agent.'}
-                        </p>
-                        <div className="suggestions">
-                            {suggestions.map(s => (
-                                <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>
-                                    {s}
-                                </button>
-                            ))}
-                        </div>
+        <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+            {/* Sidebar */}
+            <aside className="chat-sidebar" style={{ width: '280px', borderRight: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--card-bg)' }}>
+                {/* Header */}
+                <div style={{ padding: '1.5rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <div style={{ width: '32px', height: '32px', borderRadius: '8px', backgroundColor: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <span style={{ fontSize: '1.2rem', margin: 'auto' }}>🤖</span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: '1.1rem', letterSpacing: '-0.02em' }}>AI Analyst</div>
+                </div>
+
+                {/* New Chat button - hidden if no database connected */}
+                {connections.length > 0 && (
+                    <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)' }}>
+                        <button
+                            id="new-chat-btn"
+                            className="btn-accent"
+                            style={{ width: '100%', padding: '0.5rem' }}
+                            onClick={handleNewChat}
+                        >
+                            + New Chat
+                        </button>
                     </div>
                 )}
 
-                {messages.map((msg, i) => (
-                    <MessageBubble key={i} message={msg} />
-                ))}
-
-                {loading && (
-                    <div className="bubble bubble-assistant">
-                        <div className="bubble-avatar">AI</div>
-                        <div className="bubble-content">
-                            <LoadingDots />
+                {/* Session list - hidden if no database connected */}
+                {connections.length > 0 ? (
+                    <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
+                        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-color)', opacity: 0.5, marginBottom: '0.5rem', paddingLeft: '0.5rem' }}>
+                            Chat History
                         </div>
+                        {sessions.length === 0 && (
+                            <div style={{ padding: '1rem', textAlign: 'center', opacity: 0.5, fontSize: '0.9rem' }}>
+                                No previous chats
+                            </div>
+                        )}
+                        {sessions.map(s => (
+                            <div
+                                key={s.session_id}
+                                onClick={() => setActiveSessionId(s.session_id)}
+                                style={{
+                                    padding: '0.75rem',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    marginBottom: '0.25rem',
+                                    backgroundColor: activeSessionId === s.session_id
+                                        ? 'var(--primary-hover-color, rgba(99,102,241,0.1))'
+                                        : 'transparent',
+                                    borderLeft: activeSessionId === s.session_id
+                                        ? '3px solid var(--primary-color)'
+                                        : '3px solid transparent',
+                                }}
+                            >
+                                <div style={{ fontWeight: 500, fontSize: '0.95rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {s.session_name || 'Chat Session'}
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '2px' }}>
+                                    <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>
+                                        {new Date(s.updated_at).toLocaleDateString()}{' '}
+                                        {new Date(s.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem', textAlign: 'center', opacity: 0.4 }}>
+                        <div style={{ fontSize: '0.9rem', color: 'red' }}>Connect a database to view chat history</div>
                     </div>
                 )}
 
-                <div ref={bottomRef} />
+                {/* Settings / Toggles */}
+                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--border-color)', backgroundColor: 'rgba(0,0,0,0.02)' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-color)', opacity: 0.8 }}>
+                        <input 
+                            type="checkbox" 
+                            checked={alwaysShowIntro} 
+                            onChange={toggleAlwaysShowIntro}
+                            style={{ cursor: 'pointer' }}
+                        />
+                        Always show connection popup
+                    </label>
+                </div>
+
+                {/* Back button */}
+                <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)' }}>
+                    <button className="btn-ghost-sm" onClick={() => navigate('/dashboard')} style={{ width: '100%' }}>
+                         Back to Dashboard
+                    </button>
+                </div>
+            </aside>
+
+            {/* Main Chat Area */}
+            <div className="chat-container" style={{ flex: 1, position: 'relative' }}>
+                <div className="chat-messages">
+                    {!loadingHistory && messages.length === 0 && (
+                        <div className="empty-state">
+                            <div className="empty-icon">📊</div>
+                            <h2>AI Analyst</h2>
+                            <p>
+                                {isConnectionRequired 
+                                    ? 'Integrate your data to start AI analysis. Please connect a database to continue.'
+                                    : 'Ask me anything about your database. I can help with SQL queries, data visualization, and schema analysis.'}
+                            </p>
+                            {!isConnectionRequired && suggestions.length > 0 && (
+                                <div className="suggestions">
+                                    {suggestions.map(s => (
+                                        <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>
+                                            {s}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {loadingHistory && (
+                        <div style={{ padding: '2rem', textAlign: 'center' }}>
+                            <LoadingDots /> Loading history...
+                        </div>
+                    )}
+
+                    {messages.map((msg, i) => (
+                        <MessageBubble 
+                            key={i} 
+                            message={msg} 
+                            onSave={handleSaveQueryInitiate}
+                        />
+                    ))}
+
+                    {loading && (
+                        <div className="bubble bubble-assistant">
+                            <div className="bubble-avatar">AI</div>
+                            <div className="bubble-content">
+                                <LoadingDots />
+                            </div>
+                        </div>
+                    )}
+
+                    <div ref={bottomRef} />
+                </div>
+
+                <form className="chat-input-bar" onSubmit={handleSubmit}>
+                    <textarea
+                        id="chat-input"
+                        className="chat-textarea"
+                        placeholder={isConnectionRequired ? "Connection Required..." : "Ask about your data... (Enter to send)"}
+                        value={input}
+                        onChange={e => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        rows={1}
+                        disabled={loading || loadingHistory || isConnectionRequired}
+                    />
+                    <button
+                        id="send-btn"
+                        type="submit"
+                        className="btn-send"
+                        disabled={!input.trim() || loading || loadingHistory || isConnectionRequired}
+                        aria-label="Send message"
+                    >
+                        <span>⬆️</span>
+                    </button>
+                </form>
             </div>
 
-            <form className="chat-input-bar" onSubmit={handleSubmit}>
-                <textarea
-                    id="chat-input"
-                    className="chat-textarea"
-                    placeholder="Ask a question… (Enter to send, Shift+Enter for new line)"
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    rows={1}
-                    disabled={loading}
-                />
-                <button
-                    id="send-btn"
-                    type="submit"
-                    className="btn-send"
-                    disabled={!input.trim() || loading}
-                    aria-label="Send message"
-                >
-                    <span>↑</span>
-                </button>
-            </form>
+            {/* Strict Onboarding / Connection Modal */}
+            {shouldShowPopup && (
+                <div className="modal-overlay">
+                    <div className="modal-content">
+                        <span className="modal-icon">{isConnectionRequired ? '⚠️' : '🤖'}</span>
+                        <h2>{isConnectionRequired ? 'Database Required' : 'Database Awareness'}</h2>
+                        <p style={{ fontWeight: 500, fontSize: '1.1rem', marginBottom: '1.5rem' }}>
+                            Please connect a database to use AI chat
+                        </p>
+                        
+                        <div className="modal-actions" style={{ flexDirection: 'column', width: '100%' }}>
+                            <button
+                                className="btn-accent"
+                                style={{ width: '100%', marginBottom: '0.5rem' }}
+                                onClick={() => {
+                                    closeOnboarding();
+                                    navigate('/connections');
+                                }}
+                            >
+                                Connect Database
+                            </button>
+                            
+                            <button
+                                className="btn-ghost"
+                                style={{ width: '100%' }}
+                                onClick={closeOnboarding}
+                                disabled={isConnectionRequired}
+                                title={isConnectionRequired ? "Connect a database first" : "Continue to chat"}
+                            >
+                                Continue
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Save Query Modal */}
+            {msgToSave && (
+                <div className="modal-overlay">
+                    <div className="modal-content" style={{ maxWidth: '400px' }}>
+                        <span className="modal-icon">💾</span>
+                        <h2>Save to Library</h2>
+                        <p>Give this query a title to save it to your library.</p>
+                        
+                        <div style={{ margin: '1.5rem 0' }}>
+                            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 500 }}>Query Title</label>
+                            <input 
+                                type="text"
+                                className="input-field"
+                                value={saveTitle}
+                                onChange={e => setSaveTitle(e.target.value)}
+                                placeholder="Enter title..."
+                                autoFocus
+                            />
+                        </div>
+
+                        <div className="modal-actions">
+                            <button
+                                className="btn-accent"
+                                onClick={confirmSaveQuery}
+                                disabled={isSaving || !saveTitle.trim()}
+                            >
+                                {isSaving ? 'Saving...' : 'Confirm Save'}
+                            </button>
+                            <button
+                                className="btn-ghost"
+                                onClick={() => setMsgToSave(null)}
+                                disabled={isSaving}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
