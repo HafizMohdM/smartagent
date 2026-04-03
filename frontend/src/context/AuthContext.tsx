@@ -3,16 +3,16 @@ import { setToken } from '../api/client';
 
 const STORAGE_KEY = 'ai_agent_auth';
 
-export type View = 'login' | 'setup' | 'chat' | 'dashboard';
+export type View = 'login' | 'chat' | 'dashboard';
 
 function loadStoredAuth(): Partial<AuthState> {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return {};
-        const { token, sessionId, username, dbConnected } = JSON.parse(raw);
+        const { token, sessionId, username, hasDatabaseConnection, role } = JSON.parse(raw);
         if (token && sessionId) {
             setToken(token);
-            return { token, sessionId, username, dbConnected: dbConnected ?? false, currentView: 'chat' };
+            return { token, sessionId, username, hasDatabaseConnection: hasDatabaseConnection ?? false, role: role ?? 'user' };
         }
     } catch { /* ignore */ }
     return {};
@@ -22,18 +22,15 @@ interface AuthState {
     token: string | null;
     sessionId: string | null;
     username: string | null;
-    dbConnected: boolean;
-    currentView: View;
+    role: string | null;
+    hasDatabaseConnection: boolean;
 }
 
 interface AuthContextValue extends AuthState {
-    handleLoginSuccess: (token: string, sessionId: string, username: string) => void;
-    handleDbConnected: () => void;
-    handleSkipDb: () => void;
+    isAdmin: boolean;
+    handleLoginSuccess: (token: string, sessionId: string, username: string, role: string) => void;
+    setHasDatabaseConnection: (hasDb: boolean) => void;
     handleLogout: () => void;
-    handleGoToDashboard: () => void;
-    handleGoToChat: () => void;
-    handleGoToSetup: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -43,8 +40,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         token: null,
         sessionId: null,
         username: null,
-        dbConnected: false,
-        currentView: 'login',
+        role: null,
+        hasDatabaseConnection: false,
         ...loadStoredAuth(),
     }));
 
@@ -55,60 +52,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 token: state.token,
                 sessionId: state.sessionId,
                 username: state.username,
-                dbConnected: state.dbConnected,
+                hasDatabaseConnection: state.hasDatabaseConnection,
+                role: state.role,
             }));
         } else {
             localStorage.removeItem(STORAGE_KEY);
         }
     }, [state]);
 
-    // Listen for global auth errors (401, 404) from the API client
+    // Listen for global auth errors (401) from the API client
     useEffect(() => {
         const onAuthError = () => handleLogout();
         window.addEventListener('auth_error', onAuthError);
         return () => window.removeEventListener('auth_error', onAuthError);
     }, []);
 
-    const handleLoginSuccess = (token: string, sessionId: string, username: string) => {
+    const handleLoginSuccess = (token: string, sessionId: string, username: string, role: string) => {
         setToken(token);
-        setState({ token, sessionId, username, dbConnected: false, currentView: 'setup' });
+        setState({ token, sessionId, username, role, hasDatabaseConnection: false });
     };
 
-    const handleDbConnected = () => {
-        setState(s => ({ ...s, dbConnected: true, currentView: 'chat' }));
-    };
-
-    const handleSkipDb = () => {
-        setState(s => ({ ...s, currentView: 'chat' }));
+    const setHasDatabaseConnection = (hasDb: boolean) => {
+        setState(s => ({ ...s, hasDatabaseConnection: hasDb }));
     };
 
     const handleLogout = () => {
         setToken(null);
-        setState({ token: null, sessionId: null, username: null, dbConnected: false, currentView: 'login' });
+        setState({ token: null, sessionId: null, username: null, role: null, hasDatabaseConnection: false });
     };
 
-    const handleGoToDashboard = () => {
-        setState(s => ({ ...s, currentView: 'dashboard' }));
-    };
-
-    const handleGoToChat = () => {
-        setState(s => ({ ...s, currentView: 'chat' }));
-    };
-
-    const handleGoToSetup = () => {
-        setState(s => ({ ...s, currentView: 'setup' }));
-    };
+    const isAdmin = state.role === 'admin';
 
     return (
         <AuthContext.Provider value={{
             ...state,
+            isAdmin,
             handleLoginSuccess,
-            handleDbConnected,
-            handleSkipDb,
+            setHasDatabaseConnection,
             handleLogout,
-            handleGoToDashboard,
-            handleGoToChat,
-            handleGoToSetup,
         }}>
             {children}
         </AuthContext.Provider>

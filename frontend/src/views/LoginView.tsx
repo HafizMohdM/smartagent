@@ -13,22 +13,36 @@ export default function LoginView() {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
-    const handleSubmit = async (e: FormEvent) => {
-        e.preventDefault();
+    const doLogin = async (emailOrUser: string, pwd: string) => {
         setError('');
         setLoading(true);
         try {
-            if (isRegister) {
-                await register({ name: name || undefined, email, phone_number: phone || undefined, password });
-                // After registration, auto-login
-            }
-            const res = await login(email, password);
-            handleLoginSuccess(res.access_token, res.session_id, email);
+            const res = await login(emailOrUser, pwd);
+            handleLoginSuccess(res.access_token, res.session_id, emailOrUser, res.role);
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : (isRegister ? 'Registration failed' : 'Login failed'));
+            setError(err instanceof Error ? err.message : 'Login failed');
         } finally {
             setLoading(false);
         }
+    };
+
+    const handleSubmit = async (e: FormEvent) => {
+        e.preventDefault();
+        if (isRegister) {
+            setError('');
+            setLoading(true);
+            try {
+                await register({ name: name || undefined, email, phone_number: phone || undefined, password });
+                const res = await login(email, password);
+                handleLoginSuccess(res.access_token, res.session_id, email, res.role);
+            } catch (err: unknown) {
+                setError(err instanceof Error ? err.message : 'Registration failed');
+            } finally {
+                setLoading(false);
+            }
+            return;
+        }
+        await doLogin(email, password);
     };
 
     return (
@@ -70,8 +84,8 @@ export default function LoginView() {
                         <label htmlFor="email">Email</label>
                         <input
                             id="email"
-                            type="email"
-                            placeholder="admin@example.com"
+                            type="text"
+                            placeholder="admin@admin.local or admin"
                             value={email}
                             onChange={e => setEmail(e.target.value)}
                             required
@@ -99,16 +113,46 @@ export default function LoginView() {
                     </button>
                 </form>
 
+                {!isRegister && (
+                    <div className="quick-login-section">
+                        <div className="quick-login-label">Quick Login</div>
+                        <div className="quick-login-buttons">
+                            <button
+                                id="quick-login-admin"
+                                className="quick-login-btn quick-login-admin"
+                                onClick={() => doLogin('admin', 'admin123')}
+                                disabled={loading}
+                                title="Login as Admin (full access)"
+                            >
+                                <span className="quick-login-icon">🛡️</span>
+                                <div>
+                                    <div className="quick-login-role">Admin</div>
+                                    <div className="quick-login-hint">admin / admin123</div>
+                                </div>
+                            </button>
+                            <button
+                                id="quick-login-user"
+                                className="quick-login-btn quick-login-user"
+                                onClick={() => doLogin('user', 'user123')}
+                                disabled={loading}
+                                title="Login as regular User"
+                            >
+                                <span className="quick-login-icon">👤</span>
+                                <div>
+                                    <div className="quick-login-role">User</div>
+                                    <div className="quick-login-hint">user / user123</div>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 <button
                     className="btn-ghost"
                     onClick={() => { setIsRegister(!isRegister); setError(''); }}
                 >
                     {isRegister ? 'Already have an account? Sign In' : "Don't have an account? Register"}
                 </button>
-
-                {!isRegister && (
-                    <p className="auth-hint">Default credentials: <code>admin@example.com</code> / <code>admin123</code></p>
-                )}
             </div>
         </div>
     );
