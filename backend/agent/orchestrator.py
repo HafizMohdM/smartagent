@@ -16,9 +16,12 @@ from backend.agent.nodes import (
     tool_selector_node,
     executor_node,
     evaluator_node,
-    semantic_node
+    semantic_node,
+    summarizer_node,
+    chart_node
 )
 from backend.memory.session.manager import SessionManager
+from backend.agent.utils.sql_parser import SQLParser
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +29,7 @@ logger = logging.getLogger(__name__)
 def _should_retry(state: AgentState) -> str:
     """Conditional edge: route back to planner on retry, or finish."""
     if state.get("is_complete", True):
-        return "end"
+        return "summarizer"
     
     # Bounded retry logic
     retry_count = state.get("retry_count", 0)
@@ -34,7 +37,7 @@ def _should_retry(state: AgentState) -> str:
     
     if retry_count >= max_retries:
         logger.warning(f"Max retries ({max_retries}) reached in graph edge. Terminating.")
-        return "end"
+        return "summarizer"
         
     return "planner"
 
@@ -49,6 +52,8 @@ def build_agent_graph() -> StateGraph:
     graph.add_node("tool_selector", tool_selector_node)
     graph.add_node("executor", executor_node)
     graph.add_node("evaluator", evaluator_node)
+    graph.add_node("summarizer", summarizer_node)
+    graph.add_node("chart", chart_node)
 
     # ── Define edges ───────────────────────────────────────────────
     graph.set_entry_point("semantic")
@@ -62,10 +67,13 @@ def build_agent_graph() -> StateGraph:
         "evaluator",
         _should_retry,
         {
-            "end": END,
+            "summarizer": "summarizer",
             "planner": "planner",
         },
     )
+
+    graph.add_edge("summarizer", "chart")
+    graph.add_edge("chart", END)
 
     return graph
 
@@ -128,15 +136,39 @@ class AgentOrchestrator:
         logger.info(f"Running agent for session {session_id}: {query[:80]}...")
         result = await self._graph.ainvoke(initial_state)  # type: ignore
 
-        response_text = result.get("final_response", "I could not process your request.")
+        # Prioritize the human-friendly summary for the response
+        summary = result.get("summary")
+        final_resp = result.get("final_response")
+        response_text = summary or final_resp or "I could not process your request."
+
+        # Inject user_query into tool_result metadata for persistence
+        if "tool_result" in result and result["tool_result"]:
+            if "metadata" not in result["tool_result"] or result["tool_result"]["metadata"] is None:
+                result["tool_result"]["metadata"] = {}
+            result["tool_result"]["metadata"]["user_query"] = result.get("user_query")
 
         # Persist assistant response
         await self._session_manager.add_message(session_id, "assistant", response_text)
 
+        # Requirement 1: Extract pure SQL and ensure it's not in the summary
+        # If any node populated 'generated_sql', use it. Otherwise, extract from the LLM's raw output if available.
+        raw_sql = result.get("generated_sql") or result.get("sql", "")
+        pure_sql = SQLParser.extract_sql(raw_sql) or (raw_sql if SQLParser.is_valid_query(raw_sql) else None)
+
         return {
+            "summary": response_text,
+            "sql": pure_sql,
+            "preview_rows": result.get("preview_rows", []),
+            "metadata": {
+                **result.get("metadata", {}),
+                "user_query": result.get("user_query"),
+                "generated_sql": pure_sql,
+                "data": result.get("tool_result", {}).get("data")
+            },
+            "chart": result.get("chart_config", {}),
+            # Legacy fields for potential backward compatibility
             "response": response_text,
             "tool_used": result.get("selected_tool"),
             "plan": result.get("plan", {}),
-            "generated_sql": result.get("tool_params", {}).get("sql"),
             "tool_result": result.get("tool_result"),
         }

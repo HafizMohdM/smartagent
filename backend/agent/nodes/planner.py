@@ -30,7 +30,8 @@ Based on the user query and conversation history, produce a JSON plan with:
     "intent": "brief description of what the user wants",
     "tool": "name of the tool to use (or 'none' if no tool needed)",
     "parameters": {{ ... tool-specific parameters ... }},
-    "reasoning": "why you chose this tool and these parameters"
+    "reasoning": "why you chose this tool and these parameters",
+    "needs_chart": true/false (Set to true ONLY if the user explicitly asks for a chart, graph, or visualization)
 }}
 
 If the user is making casual conversation or asking something that doesn't

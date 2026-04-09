@@ -8,7 +8,7 @@ class DBConnection(Base):
     __tablename__ = "db_connections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     connection_name = Column(String, nullable=False)
     db_type = Column(String, nullable=False)
     host = Column(String, nullable=False)

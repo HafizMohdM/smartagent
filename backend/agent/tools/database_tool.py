@@ -75,8 +75,19 @@ class DatabaseTool(BaseTool):
             logger.info("[Pipeline] Step 2: Generating SQL from user question")
             sql = await self._sql_generator.generate(user_query=question, schema=schema)
 
-            # 4. SQL Validation
-            logger.info(f"[Pipeline] Step 3: Validating SQL: {sql[:120]}...")
+            # 4. SQL Detection & Validation
+            logger.info(f"[Pipeline] Step 3: Validating generator output")
+            
+            # Simple check: does it look like SQL?
+            clean_sql = sql.strip().upper()
+            if not (clean_sql.startswith("SELECT") or clean_sql.startswith("WITH") or clean_sql.startswith("--")):
+                # It's likely a natural language explanation or error message from the LLM
+                return ToolResult(
+                    success=False,
+                    error=sql,  # Pass the plain text explanation as the error
+                    metadata={"generated_sql": None},
+                )
+
             is_valid, reason = self._sql_validator.validate(sql)
             if not is_valid:
                 return ToolResult(
@@ -85,10 +96,24 @@ class DatabaseTool(BaseTool):
                     metadata={"generated_sql": sql},
                 )
 
-            # 5. SQL Execution
+            # 5. SQL Execution & Self-Correction Loop
             logger.info("[Pipeline] Step 4: Executing SQL")
             executor = SQLExecutor(connector)
-            results = await executor.execute(sql)
+            
+            try:
+                results = await executor.execute(sql)
+            except Exception as e:
+                logger.warning(f"Initial SQL execution failed: {e}. Attempting self-correction...")
+                
+                # Retry once with error context
+                sql = await self._sql_generator.generate(
+                    user_query=question, 
+                    schema=schema, 
+                    error_context=str(e)
+                )
+                
+                logger.info(f"Retrying with corrected SQL: {sql[:120]}...")
+                results = await executor.execute(sql)
 
             # 6. Result Formatting
             logger.info(f"[Pipeline] Step 5: Returning {results['row_count']} rows")

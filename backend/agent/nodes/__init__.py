@@ -6,3 +6,5 @@ from .semantic_node import semantic_node
 from .rag_node import rag_node
 from .memory_node import memory_node
 from .cache_node import cache_node
+from .summarizer_node import summarizer_node
+from .chart_node import chart_node

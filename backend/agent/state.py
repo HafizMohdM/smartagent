@@ -32,8 +32,23 @@ class AgentState(TypedDict, total=False):
     # Raw result from Tool Execution
     tool_result: Dict[str, Any]
 
-    # Final natural-language response to the user
+    # Final natural-language summary / observation to the user
+    summary: str
+
+    # Configuration for charting (type, axes, data)
+    chart_config: Dict[str, Any]
+
+    # Pre-formatted rows for preview
+    preview_rows: List[Dict[str, Any]]
+
+    # Combined metadata
+    metadata: Dict[str, Any]
+
+    # Final response (legacy, for compatibility)
     final_response: str
+
+    # Structured SQL extracted during the run
+    generated_sql: str
 
 
     # Whether the evaluator decided the result is satisfactory

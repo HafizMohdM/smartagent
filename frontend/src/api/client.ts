@@ -187,9 +187,10 @@ export interface ChatMessageSendResponse {
   metadata: { plan?: any; session_id?: string; [key: string]: any };
 }
 
-/** List all chat sessions for the current user (global — not connection-scoped). */
-export async function getChatSessions(): Promise<ChatSessionMetaResponse[]> {
-  return request<ChatSessionMetaResponse[]>('/api/chat-sessions');
+/** List all chat sessions for the current user, optionally filtered by connectionId. */
+export async function getChatSessions(connectionId?: string): Promise<ChatSessionMetaResponse[]> {
+  const url = connectionId ? `/api/chat-sessions?connection_id=${connectionId}` : '/api/chat-sessions';
+  return request<ChatSessionMetaResponse[]>(url);
 }
 
 export async function getChatSession(session_id: string): Promise<ChatSessionDetailsResponse> {
@@ -198,16 +199,18 @@ export async function getChatSession(session_id: string): Promise<ChatSessionDet
 
 /**
  * Send a chat message.
- * connection_id is optional — omit to chat without a database connection.
+ * connection_id is REQUIRED for database queries.
  */
 export async function sendDbChatMessage(
   message: string,
+  connection_id: string,
   session_id?: string | null,
 ): Promise<ChatMessageSendResponse> {
   return request<ChatMessageSendResponse>('/api/chat-message', {
     method: 'POST',
     body: JSON.stringify({
       message,
+      connection_id,
       session_id: session_id ?? undefined,
     }),
   });
@@ -256,10 +259,13 @@ export async function deleteConnection(id: string): Promise<void> {
 export interface SavedQueryItem {
   id: string;
   connection_id: string;
-  query_name: string;
+  tenant_id: string;
+  database_name: string;
+  username: string;
+  title: string;
   natural_language_query: string;
-  generated_sql: string;
-  query_result_snapshot: unknown[] | null;
+  query: string;
+  query_result_snapshot: any | null;
   execution_time_ms: number | null;
   row_count: number | null;
   created_at: string;
@@ -273,11 +279,34 @@ export async function deleteSavedQuery(id: string): Promise<void> {
   await request(`/api/queries/${id}`, { method: 'DELETE' });
 }
 
+export async function getSavedQueryPreview(id: string): Promise<SavedQueryItem> {
+  return request<SavedQueryItem>(`/api/queries/${id}/preview`);
+}
+
+export async function getSavedQuery(id: string): Promise<SavedQueryItem> {
+  // Alias or direct fetch if we don't want to execute. 
+  // However, since the requirements say "execute on load", we keep using preview for now 
+  // or add a simple getter. Let's add a proper preview/execution one.
+  return request<SavedQueryItem>(`/api/queries/${id}/preview`);
+}
+
+export interface SavedQueryUpdateRequest {
+  title?: string;
+  query?: string;
+}
+
+export async function updateSavedQuery(id: string, data: SavedQueryUpdateRequest): Promise<SavedQueryItem> {
+  return request<SavedQueryItem>(`/api/queries/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
 export interface SavedQueryCreateRequest {
   connection_id: string;
-  query_name: string;
+  title: string;
   natural_language_query: string;
-  generated_sql: string;
+  query: string;
   query_result_snapshot?: any;
   execution_time_ms?: number;
   row_count?: number;
@@ -288,4 +317,65 @@ export async function createSavedQuery(data: SavedQueryCreateRequest): Promise<S
     method: 'POST',
     body: JSON.stringify(data),
   });
+}
+// ── Reports ───────────────────────────────────────────────────────
+
+export interface ReportItem {
+  id: string;
+  report_name: string;
+  chart_type: 'bar' | 'line' | 'pie' | 'table';
+  chart_config: {
+    x_axis: string;
+    y_axis: string;
+    grouping?: string;
+  };
+  saved_query_id: string;
+  connection_id: string;
+  user_id: string;
+  tenant_id: string;
+  created_at: string;
+}
+
+export interface ReportDataResponse {
+  report_id: string;
+  data: any[];
+  chart_type: string;
+  chart_config: any;
+  row_count: number;
+  execution_time_ms: number;
+}
+
+export async function getReports(): Promise<ReportItem[]> {
+  return request<ReportItem[]>('/api/reports');
+}
+
+export async function createReport(data: {
+  report_name: string;
+  chart_type: string;
+  chart_config: any;
+  saved_query_id: string;
+  connection_id: string;
+}): Promise<ReportItem> {
+  return request<ReportItem>('/api/reports', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteReport(id: string): Promise<void> {
+  await request(`/api/reports/${id}`, { method: 'DELETE' });
+}
+
+export async function getReportData(id: string): Promise<ReportDataResponse> {
+  return request<ReportDataResponse>(`/api/reports/${id}/data`);
+}
+
+export interface SystemStatistics {
+  queries_today: number;
+  avg_execution_time: number;
+  success_rate: number;
+}
+
+export async function getSystemStatistics(): Promise<SystemStatistics> {
+  return request<SystemStatistics>('/api/reports/statistics');
 }
