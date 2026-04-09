@@ -5,6 +5,7 @@ import Header from './components/Header';
 import LoginView from './views/LoginView';
 import ChatView from './views/ChatView';
 import DashboardView from './views/DashboardView';
+import SavedQueryDetailView from './views/SavedQueryDetailView';
 
 function PrivateRoute({ children }: { children: ReactNode }) {
   const { token } = useAuth();
@@ -26,6 +27,7 @@ function AppContent() {
           <Route path="/dashboard" element={<PrivateRoute><DashboardView /></PrivateRoute>} />
           {/* Global chat — onboarding popup handled inside */}
           <Route path="/chat" element={<PrivateRoute><ChatView /></PrivateRoute>} />
+          <Route path="/saved-query/:id" element={<PrivateRoute><SavedQueryDetailView /></PrivateRoute>} />
           <Route path="/connections" element={<PrivateRoute><DashboardView /></PrivateRoute>} />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>

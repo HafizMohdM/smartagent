@@ -20,6 +20,7 @@ export interface Message {
     sql?: string;
     chart?: ChartConfig;
     metadata?: any;
+    user_query?: string;
     tool_used?: string;
     timestamp: Date;
 }
@@ -38,6 +39,7 @@ export default function ChatView() {
     
     // Connection & Onboarding state
     const [connections, setConnections] = useState<DBConnectionItem[]>([]);
+    const [selectedConnectionId, setSelectedConnectionId] = useState<string>('');
     const [loadingConnections, setLoadingConnections] = useState(true);
 
     // Save Query state
@@ -49,31 +51,41 @@ export default function ChatView() {
     const autoExecDone = useRef(false);
 
     useEffect(() => {
-
         getConnections()
             .then(data => {
                 setConnections(data);
+                if (data.length > 0) {
+                    setSelectedConnectionId(data[0].id);
+                }
             })
             .catch(() => setConnections([]))
             .finally(() => setLoadingConnections(false));
     }, []);
 
 
-    // Load all chat sessions for this user
-    const loadSessions = async () => {
+    // Load all chat sessions for the selected connection
+    const loadSessions = async (connId?: string) => {
+        const idToUse = connId || selectedConnectionId;
+        if (!idToUse) return;
+        
         try {
-            const res = await getChatSessions();
+            const res = await getChatSessions(idToUse);
             setSessions(res);
         } catch (err) {
             console.error('Failed to load sessions:', err);
         }
     };
 
-    useEffect(() => { 
-        if (connections.length > 0) {
-            loadSessions(); 
+    // Reset chat state when selection changes
+    useEffect(() => {
+        if (selectedConnectionId) {
+            setActiveSessionId(null);
+            setMessages([]);
+            loadSessions(selectedConnectionId);
         }
-    }, [connections]);
+    }, [selectedConnectionId]);
+
+    // (Removed direct call to loadSessions here, handled by selectedConnectionId effect)
 
     // Handle Prefill from Saved Queries
     useEffect(() => {
@@ -93,14 +105,18 @@ export default function ChatView() {
         setLoadingHistory(true);
         getChatSession(activeSessionId)
             .then(res => {
-                const mapped: Message[] = res.messages.map(m => ({
-                    role: m.role === 'agent' ? 'assistant' : 'user',
-                    content: m.message_text,
-                    sql: m.generated_sql || undefined,
-                    metadata: m.query_result_snapshot,
-                    chart: m.query_result_snapshot?.chart,
-                    timestamp: new Date(m.created_at),
-                }));
+                const mapped: Message[] = res.messages.map(m => {
+                    const snapshot = m.query_result_snapshot;
+                    return {
+                        role: m.role === 'agent' ? 'assistant' : 'user',
+                        content: m.message_text,
+                        sql: m.generated_sql || snapshot?.metadata?.generated_sql || undefined,
+                        metadata: snapshot,
+                        chart: snapshot?.chart,
+                        user_query: snapshot?.metadata?.user_query || undefined,
+                        timestamp: new Date(m.created_at),
+                    };
+                });
                 setMessages(mapped);
             })
             .catch(err => console.error('Failed to load session:', err))
@@ -127,9 +143,16 @@ export default function ChatView() {
         setInput('');
         setLoading(true);
 
+        if (!selectedConnectionId) {
+            alert("No database connection selected.");
+            setLoading(false);
+            return;
+        }
+
         try {
             const res = await sendDbChatMessage(
                 text,
+                selectedConnectionId,
                 activeSessionId,
             );
 
@@ -139,9 +162,10 @@ export default function ChatView() {
             const agentMsg: Message = {
                 role: 'assistant',
                 content: res.agent_message.message_text,
-                sql: res.agent_message.generated_sql || undefined,
-                chart: res.metadata?.chart,
-                metadata: res.metadata,
+                sql: res.agent_message.generated_sql || res.agent_message.query_result_snapshot?.metadata?.generated_sql || undefined,
+                chart: res.metadata?.chart || res.agent_message.query_result_snapshot?.chart,
+                metadata: res.agent_message.query_result_snapshot,
+                user_query: res.agent_message.query_result_snapshot?.metadata?.user_query || undefined,
                 tool_used: res.tool_used || undefined,
                 timestamp: new Date(res.agent_message.created_at || new Date()),
             };
@@ -166,20 +190,26 @@ export default function ChatView() {
     const handleSaveQueryInitiate = (msg: Message) => {
         setMsgToSave(msg);
         const currentSession = sessions.find(s => s.session_id === activeSessionId);
-        setSaveTitle(currentSession?.session_name || `Query - ${new Date().toLocaleDateString()}`);
+        // Use the original user query as the default title if available
+        const defaultTitle = msg.user_query || currentSession?.session_name || `Query - ${new Date().toLocaleDateString()}`;
+        setSaveTitle(defaultTitle);
     };
 
     const confirmSaveQuery = async () => {
         if (!msgToSave || !saveTitle) return;
         setIsSaving(true);
+
+        const currentSession = sessions.find(s => s.session_id === activeSessionId);
+        const connectionId = currentSession?.connection_id || connections[0]?.id || '';
+
         try {
             await createSavedQuery({
-                connection_id: connections[0]?.id || '',
-                query_name: saveTitle,
+                connection_id: connectionId,
+                title: saveTitle,
                 natural_language_query: msgToSave.content,
-                generated_sql: msgToSave.sql || '',
-                // Requirement 10: Do not store raw result data
-                query_result_snapshot: null, 
+                query: msgToSave.sql || '',
+                // Persist chart config if available, otherwise general metadata
+                query_result_snapshot: msgToSave.chart ? { chart: msgToSave.chart } : msgToSave.metadata, 
                 row_count: msgToSave.metadata?.row_count,
             });
             setMsgToSave(null);
@@ -220,6 +250,8 @@ export default function ChatView() {
                     <div style={{ fontWeight: 600, fontSize: '1.1rem', letterSpacing: '-0.02em' }}>AI Analyst</div>
                 </div>
 
+                {/* Connection Selector Hidden */}
+
                 {/* New Chat button - hidden if no database connected */}
                 {connections.length > 0 && (
                     <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)' }}>
@@ -237,8 +269,8 @@ export default function ChatView() {
                 {/* Session list - hidden if no database connected */}
                 {connections.length > 0 ? (
                     <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
-                        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-color)', opacity: 0.5, marginBottom: '0.5rem', paddingLeft: '0.5rem' }}>
-                            Chat History
+                        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-color)', opacity: 0.5, marginBottom: '0.5rem', paddingLeft: '0.5rem', marginTop: '0.5rem' }}>
+                            History
                         </div>
                         {sessions.length === 0 && (
                             <div style={{ padding: '1rem', textAlign: 'center', opacity: 0.5, fontSize: '0.9rem' }}>

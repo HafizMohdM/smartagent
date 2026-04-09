@@ -1,5 +1,6 @@
 """
 Chat Session & Message CRUD operations.
+connection_id is now OPTIONAL — sessions may exist without a DB connection.
 """
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -13,49 +14,84 @@ from backend.models.chat_session import ChatSession
 from backend.models.chat_message import ChatMessage
 
 
-async def get_or_create_session(
+async def create_session(
     db: AsyncSession,
     user_id: str,
-    connection_id: str,
+    tenant_id: str,
+    connection_id: Optional[str] = None,
+    session_name: Optional[str] = None,
 ) -> ChatSession:
     """
-    Return the existing chat session for (user_id, connection_id),
-    or create a new one if none exists.
+    Create a new chat session.
+    connection_id is optional — pass None for sessions without a DB connection.
     """
-    result = await db.execute(
-        select(ChatSession)
-        .where(ChatSession.user_id == user_id)
-        .where(ChatSession.connection_id == connection_id)
+    if not session_name:
+        session_name = f"Chat - {datetime.now(timezone.utc).strftime('%b %d, %H:%M')}"
+
+    session = ChatSession(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        connection_id=connection_id if connection_id else None,
+        session_name=session_name,
     )
-    session = result.scalars().first()
-
-    if session is None:
-        session = ChatSession(
-            user_id=user_id,
-            connection_id=connection_id,
-        )
-        db.add(session)
-        await db.commit()
-        await db.refresh(session)
-
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
     return session
 
 
-async def get_session_with_messages(
+async def get_all_sessions_for_user(
     db: AsyncSession,
+    tenant_id: str,
     user_id: str,
-    connection_id: str,
-) -> ChatSession:
+    connection_id: Optional[str] = None,
+) -> List[ChatSession]:
     """
-    Get-or-create the session, then eagerly load its messages.
+    Get all chat sessions for a specific user within a tenant,
+    optionally filtered by connection_id.
     """
-    session = await get_or_create_session(db, user_id, connection_id)
+    query = select(ChatSession).where(ChatSession.tenant_id == tenant_id).where(ChatSession.user_id == user_id)
+    
+    if connection_id:
+        query = query.where(ChatSession.connection_id == connection_id)
+    
+    result = await db.execute(query.order_by(ChatSession.updated_at.desc()))
+    return list(result.scalars().all())
 
-    # Reload with messages eager-loaded
+
+async def get_all_sessions_for_connection(
+    db: AsyncSession,
+    tenant_id: str,
+    connection_id: str,
+) -> List[ChatSession]:
+    """
+    Get all chat sessions for a specific connection (kept for compatibility).
+    """
+    result = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.tenant_id == tenant_id)
+        .where(ChatSession.connection_id == connection_id)
+        .order_by(ChatSession.updated_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_session_by_id(
+    db: AsyncSession,
+    session_id: str,
+    tenant_id: str,
+    user_id: str,
+) -> Optional[ChatSession]:
+    """
+    Get a specific session, verifying tenant and user access.
+    Returns session with messages eagerly loaded.
+    """
     result = await db.execute(
         select(ChatSession)
         .options(selectinload(ChatSession.messages))
-        .where(ChatSession.id == session.id)
+        .where(ChatSession.id == session_id)
+        .where(ChatSession.tenant_id == tenant_id)
+        .where(ChatSession.user_id == user_id)
     )
     return result.scalars().first()
 

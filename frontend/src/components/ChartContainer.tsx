@@ -31,7 +31,7 @@ const ChartContainer: React.FC<ChartContainerProps> = ({ config }) => {
   const activeChartType = chart_type || (type !== 'table' ? type : 'bar');
 
   if (!data || data.length === 0) {
-    return <div className="chart-placeholder">No data available.</div>;
+    return <div className="chart-placeholder">No data available for visualization</div>;
   }
 
   const renderTable = () => (
@@ -54,33 +54,57 @@ const ChartContainer: React.FC<ChartContainerProps> = ({ config }) => {
   );
 
   const renderVisualChart = () => {
+    // Requirement 4: Transform data into a standard name/value format
+    // name = x_axis value, value = y_axis value
+    const chartData = data.map(row => ({
+      ...row,
+      name: String(row[x_axis!] ?? 'N/A'),
+      value: typeof row[y_axis!] === 'number' ? row[y_axis!] : parseFloat(row[y_axis!] || '0')
+    }));
+
+    // Requirement 8: Debug Logging
+    console.log('[ChartContainer] Rendering Chart:', { 
+      type: activeChartType,
+      x: x_axis, 
+      y: y_axis,
+      rows: chartData.length,
+      firstRow: chartData[0]
+    });
+
     switch (activeChartType) {
       case 'line':
         return (
-          <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={x_axis!} />
+          <LineChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="name" />
             <YAxis />
             <Tooltip />
             <Legend />
-            <Line type="monotone" dataKey={y_axis!} stroke="#8884d8" activeDot={{ r: 8 }} />
+            <Line 
+              type="monotone" 
+              dataKey="value" 
+              stroke="#8884d8" 
+              name={y_axis || 'Value'} 
+              activeDot={{ r: 8 }} 
+              strokeWidth={2}
+            />
           </LineChart>
         );
       case 'pie':
         return (
           <PieChart>
             <Pie
-              data={data}
+              data={chartData}
               cx="50%"
               cy="50%"
-              labelLine={false}
-              label={({ name, percent }: { name: string; percent: number }) => `${name} ${(percent * 100).toFixed(0)}%`}
+              labelLine={true}
+              label={({ name, percent }: { name: string; percent: number }) => `${name} (${(percent * 100).toFixed(0)}%)`}
               outerRadius={80}
               fill="#8884d8"
-              dataKey={y_axis!}
-              nameKey={x_axis!}
+              dataKey="value"
+              nameKey="name"
             >
-              {data.map((_, index) => (
+              {chartData.map((_, index) => (
                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
               ))}
             </Pie>
@@ -91,13 +115,13 @@ const ChartContainer: React.FC<ChartContainerProps> = ({ config }) => {
       case 'bar':
       default:
         return (
-          <BarChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={x_axis!} />
+          <BarChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="name" />
             <YAxis />
             <Tooltip />
             <Legend />
-            <Bar dataKey={y_axis!} fill="#82ca9d" />
+            <Bar dataKey="value" fill="#82ca9d" name={y_axis || 'Value'} radius={[4, 4, 0, 0]} />
           </BarChart>
         );
     }

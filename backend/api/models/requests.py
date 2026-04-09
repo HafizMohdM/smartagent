@@ -3,7 +3,7 @@ Pydantic request models for all API endpoints.
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 
 
 # ── Authentication ──────────────────────────────────────────────────
@@ -57,8 +57,9 @@ class ChatRequest(BaseModel):
     connection_id: Optional[str] = Field(default=None, description="Database connection ID to use")
 
 class ChatMessageRequest(BaseModel):
-    """Send a chat message within a persistent session tied to a connection."""
-    connection_id: str = Field(..., description="Database connection ID")
+    """Send a chat message within a persistent session (connection is optional)."""
+    connection_id: Optional[str] = Field(default=None, description="Database connection ID (optional)")
+    session_id: Optional[str] = Field(default=None, description="Active session ID, if continuing a thread")
     message: str = Field(..., min_length=1, description="User message / query")
 
 # ── Saved Queries ───────────────────────────────────────────────────
@@ -66,12 +67,18 @@ class ChatMessageRequest(BaseModel):
 class SavedQueryCreateRequest(BaseModel):
     """Payload to save an executed query."""
     connection_id: str = Field(..., description="Connection ID used")
-    query_name: str = Field(..., description="Friendly name for the saved query")
+    title: str = Field(..., description="Friendly name for the saved query")
     natural_language_query: str = Field(..., description="Original user question")
-    generated_sql: str = Field(..., description="The generated SQL")
-    query_result_snapshot: Optional[list] = Field(default=None, description="JSON snapshot of query results")
+    query: str = Field(..., description="The generated SQL")
+    query_result_snapshot: Optional[Any] = Field(default=None, description="JSON snapshot of query results")
     execution_time_ms: Optional[int] = Field(default=None, description="Execution time in milliseconds")
     row_count: Optional[int] = Field(default=None, description="Number of rows returned")
+
+
+class SavedQueryUpdateRequest(BaseModel):
+    """Payload to update a saved query's metadata."""
+    title: Optional[str] = Field(default=None, description="Updated friendly name")
+    query: Optional[str] = Field(default=None, description="Updated SQL query")
 
 
 # ── Session ─────────────────────────────────────────────────────────
