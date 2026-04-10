@@ -21,7 +21,7 @@ export default function Header() {
         <header className="app-header">
             <div className="header-brand" onClick={() => navigate('/dashboard')} style={{ cursor: 'pointer' }}>
                 <span className="header-logo">⚡</span>
-                <span className="header-title">AI Agent Platform</span>
+                <span className="header-title">AI Data Copilot</span>
             </div>
 
             <div className="header-status">
