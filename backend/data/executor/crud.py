@@ -28,15 +28,28 @@ async def save_query(
     execution_time_ms: Optional[int] = None,
     row_count: Optional[int] = None
 ) -> SavedQuery:
-    """Save a new executed query. Extracts pure SQL before saving."""
-    # Requirement 1 & 2: Extract and Validate SQL
-    pure_sql = SQLParser.extract_sql(query)
-    if not pure_sql:
-        # Fallback: check if the input itself starts with SELECT/WITH directly
-        if SQLParser.is_valid_query(query):
+    # Determine response type and appropriate content to save
+    from backend.agent.utils.sql_parser import SQLParser
+    rtype = SQLParser.get_response_type(query)
+    
+    if rtype == "sql":
+        pure_sql = SQLParser.extract_sql(query)
+        if not pure_sql and SQLParser.is_valid_query(query):
             pure_sql = query.strip()
-        else:
+        
+        if not pure_sql:
             raise ValueError("No valid SQL found in response. Saving blocked.")
+        content_to_save = pure_sql
+    elif rtype in ["metadata", "lookup"]:
+        # Save the full text response for non-SQL intents
+        content_to_save = query.strip()
+    else:
+        # For ERROR or UNKNOWN, we still try to extract SQL as a fallback
+        pure_sql = SQLParser.extract_sql(query)
+        if pure_sql:
+            content_to_save = pure_sql
+        else:
+            raise ValueError(f"Cannot save response of type '{rtype}' without valid SQL.")
 
     saved_query = SavedQuery(
         user_id=user_id,
@@ -46,7 +59,7 @@ async def save_query(
         database_name=database_name,
         title=title,
         natural_language_query=natural_language_query,
-        query=pure_sql, # Store pure SQL
+        query=content_to_save, # Store pure SQL or formatted text
         query_result_snapshot=query_result_snapshot,
         execution_time_ms=execution_time_ms,
         row_count=row_count

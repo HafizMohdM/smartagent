@@ -98,7 +98,7 @@ async def get_report_data(
             chart_type=report.chart_type,
             chart_config=report.chart_config,
             row_count=results["row_count"],
-            execution_time_ms=results["execution_time_ms"]
+            execution_time_ms=int(results.get("execution_time_ms", 0))
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

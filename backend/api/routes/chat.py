@@ -229,6 +229,7 @@ async def send_chat_message(
                     database=conn.database_name,
                     username=conn.username,
                     password=plaintext_password,
+                    connection_id=connection_id,
                 )
                 db_connected = True
             except Exception as e:

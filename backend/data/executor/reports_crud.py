@@ -83,7 +83,8 @@ async def execute_report_query(db: AsyncSession, report: Report) -> Dict[str, An
             port=conn.port,
             database=conn.database_name,
             username=conn.username,
-            password=plaintext_password
+            password=plaintext_password,
+            connection_id=str(conn.id)
         )
         executor = SQLExecutor(connector)
         

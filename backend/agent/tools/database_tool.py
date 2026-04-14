@@ -73,62 +73,80 @@ class DatabaseTool(BaseTool):
 
             # 3. SQL Generation
             logger.info("[Pipeline] Step 2: Generating SQL from user question")
-            sql = await self._sql_generator.generate(user_query=question, schema=schema)
+            connection_id = getattr(connector, "_connection_id", None)
+            sql = await self._sql_generator.generate(
+                user_query=question, 
+                schema=schema, 
+                connection_id=connection_id
+            )
 
-            # 4. SQL Detection & Validation
+            # 4. Response Parsing & Validation
             logger.info(f"[Pipeline] Step 3: Validating generator output")
             
-            # Simple check: does it look like SQL?
-            clean_sql = sql.strip().upper()
-            if not (clean_sql.startswith("SELECT") or clean_sql.startswith("WITH") or clean_sql.startswith("--")):
-                # It's likely a natural language explanation or error message from the LLM
+            from backend.agent.utils.sql_parser import SQLParser
+            pure_sql = SQLParser.extract_sql(sql)
+            
+            # --- Non-SQL Responses (Metadata/Lookup) ---
+            if not pure_sql:
+                resp_type = SQLParser.get_response_type(sql)
+                if resp_type in ["metadata", "lookup"]:
+                    return ToolResult(
+                        success=True,
+                        data={"message": sql, "type": resp_type},
+                        metadata={"generated_sql": None},
+                    )
                 return ToolResult(
                     success=False,
-                    error=sql,  # Pass the plain text explanation as the error
+                    error=sql,
                     metadata={"generated_sql": None},
                 )
 
-            is_valid, reason = self._sql_validator.validate(sql)
+            # --- SQL Validation ---
+            is_valid, reason = self._sql_validator.validate(pure_sql)
             if not is_valid:
                 return ToolResult(
                     success=False,
                     error=f"SQL validation failed: {reason}",
-                    metadata={"generated_sql": sql},
+                    metadata={"generated_sql": pure_sql},
                 )
-
+            
             # 5. SQL Execution & Self-Correction Loop
             logger.info("[Pipeline] Step 4: Executing SQL")
-            executor = SQLExecutor(connector)
+            from backend.data.executor import executor
+            sql_executor = executor.SQLExecutor(connector)
             
             try:
-                results = await executor.execute(sql)
+                results = await sql_executor.execute(pure_sql)
+                return ToolResult(
+                    success=True,
+                    data=results,
+                    metadata={"generated_sql": pure_sql},
+                )
             except Exception as e:
                 logger.warning(f"Initial SQL execution failed: {e}. Attempting self-correction...")
                 
                 # Retry once with error context
-                sql = await self._sql_generator.generate(
-                    user_query=question, 
-                    schema=schema, 
+                corrected_sql_raw = await self._sql_generator.generate(
+                    user_query=question,
+                    schema=schema,
+                    connection_id=connection_id,
                     error_context=str(e)
                 )
+                corrected_sql = SQLParser.extract_sql(corrected_sql_raw) or corrected_sql_raw
                 
-                logger.info(f"Retrying with corrected SQL: {sql[:120]}...")
-                results = await executor.execute(sql)
-
-            # 6. Result Formatting
-            logger.info(f"[Pipeline] Step 5: Returning {results['row_count']} rows")
-            return ToolResult(
-                success=True,
-                data=results,
-                metadata={
-                    "generated_sql": sql,
-                    "row_count": results["row_count"],
-                    "execution_time_ms": results["execution_time_ms"],
-                },
-            )
-
-        except ConnectionError as e:
-            return ToolResult(success=False, error=f"Database connection error: {str(e)}")
+                try:
+                    results = await sql_executor.execute(corrected_sql)
+                    return ToolResult(
+                        success=True,
+                        data=results,
+                        metadata={"generated_sql": corrected_sql},
+                    )
+                except Exception as e2:
+                    return ToolResult(
+                        success=False,
+                        error=f"SQL execution failed after correction: {e2}",
+                        metadata={"generated_sql": corrected_sql},
+                    )
         except Exception as e:
             logger.error(f"Database tool error: {e}", exc_info=True)
             return ToolResult(success=False, error=f"Unexpected error: {str(e)}")
@@ -143,6 +161,7 @@ class DatabaseTool(BaseTool):
         database: str,
         username: str,
         password: str,
+        connection_id: str = None,
     ) -> Dict[str, str]:
         """
         Connect to a database for a specific session.
@@ -152,6 +171,7 @@ class DatabaseTool(BaseTool):
         result = await connector.connect(
             host=host, port=port, database=database,
             username=username, password=password,
+            connection_id=connection_id,
         )
         self._connectors[session_id] = connector
 

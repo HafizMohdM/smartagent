@@ -20,6 +20,7 @@ class DatabaseConnector:
     def __init__(self):
         self._engine: Optional[AsyncEngine] = None
         self._sync_engine = None
+        self._connection_id: Optional[str] = None
         self._connection_info: Dict[str, Any] = {}
         self._schema_cache: Optional[Dict[str, Any]] = None
 
@@ -34,6 +35,7 @@ class DatabaseConnector:
         database: str,
         username: str,
         password: str,
+        connection_id: Optional[str] = None,
     ) -> Dict[str, str]:
         """
         Establish an async connection to the PostgreSQL database.
@@ -50,11 +52,12 @@ class DatabaseConnector:
             )
 
             # Use ConnectionPoolManager for async engine to avoid connection-per-request
-            connection_id = f"{host}:{port}/{database}:{username}"
-            self._engine = pool_manager.get_pool(connection_id=connection_id, db_url=async_url)
+            pool_key = f"{host}:{port}/{database}:{username}"
+            self._engine = pool_manager.get_pool(connection_id=pool_key, db_url=async_url)
             
             # Keep sync engine strictly for schema introspection
             self._sync_engine = create_engine(sync_url, echo=False)
+            self._connection_id = connection_id
 
             # Test the connection
             async with self._engine.connect() as conn:

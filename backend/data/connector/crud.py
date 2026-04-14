@@ -42,6 +42,12 @@ async def create_connection(
     """Create a new database connection for a tenant."""
     encrypted_password = encrypt_password(password)
     
+    # Sanitize inputs to prevent connection strings with whitespace
+    connection_name = connection_name.strip()
+    host = host.strip()
+    database_name = database_name.strip()
+    username = username.strip()
+    
     conn = DBConnection(
         tenant_id=tenant_id,
         connection_name=connection_name,

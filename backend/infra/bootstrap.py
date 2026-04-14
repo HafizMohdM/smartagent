@@ -24,8 +24,26 @@ try:
     else:
         print("Database 'ai_agent_db' already exists.")
         
-    cursor.close()
-    conn.close()
+    # 2. Connect to the new database to try and create the vector extension
+    conn_db = psycopg2.connect(
+        dbname="ai_agent_db",
+        user="postgres",
+        password="root",
+        host="localhost",
+        port="5432"
+    )
+    conn_db.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    cursor_db = conn_db.cursor()
+    try:
+        cursor_db.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        print("Extension 'vector' enabled successfully (if available).")
+    except Exception as e:
+        print(f"WARNING: Could not enable 'vector' extension: {e}")
+        print("RAG features will require manual installation of pgvector.")
+    
+    cursor_db.close()
+    conn_db.close()
+
 except Exception as e:
-    print(f"Error creating database: {e}")
+    print(f"Error during database bootstrap: {e}")
     sys.exit(1)
