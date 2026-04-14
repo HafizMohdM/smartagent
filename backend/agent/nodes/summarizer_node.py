@@ -47,6 +47,16 @@ async def summarizer_node(state: AgentState) -> Dict[str, Any]:
 
     # Handle Successful query with Zero Rows
     data = tool_result.get("data", {})
+    
+    # Handle Structured Production Responses (Metadata/Lookup)
+    if isinstance(data, dict) and "message" in data:
+        msg = data["message"]
+        if any(tag in msg for tag in ["TABLES:", "MATCHED_TABLE:", "ERROR:"]):
+            return {
+                "summary": msg,
+                "final_response": msg
+            }
+
     rows = data.get("rows", []) if isinstance(data, dict) else []
     if not rows:
         no_data_msg = (

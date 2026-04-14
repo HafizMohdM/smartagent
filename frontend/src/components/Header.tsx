@@ -21,7 +21,7 @@ export default function Header() {
         <header className="app-header">
             <div className="header-brand" onClick={() => navigate('/dashboard')} style={{ cursor: 'pointer' }}>
                 <span className="header-logo">⚡</span>
-                <span className="header-title">AI Data Copilot</span>
+                <span className="header-title">AI Agent Platform</span>
             </div>
 
             <div className="header-status">
@@ -29,8 +29,8 @@ export default function Header() {
                     <button
                         className={`nav-btn ${location.pathname.startsWith('/chat') ? 'nav-btn-active' : ''}`}
                         onClick={() => navigate('/dashboard')} // Chat takes context, so default to dashboard if they click "Chat" generally? 
-                                                              // Or hide it if not in a connection?
-                                                              // For now, let's just let them go to dashboard to pick a connection.
+                    // Or hide it if not in a connection?
+                    // For now, let's just let them go to dashboard to pick a connection.
                     >
                         📊 Connections
                     </button>

@@ -162,6 +162,7 @@ export default function ChatView() {
             const agentMsg: Message = {
                 role: 'assistant',
                 content: res.agent_message.message_text,
+                summary: res.agent_message.query_result_snapshot?.summary || undefined,
                 sql: res.agent_message.generated_sql || res.agent_message.query_result_snapshot?.metadata?.generated_sql || undefined,
                 chart: res.metadata?.chart || res.agent_message.query_result_snapshot?.chart,
                 metadata: res.agent_message.query_result_snapshot,

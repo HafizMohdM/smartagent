@@ -165,7 +165,8 @@ async def preview_saved_query(
         connector = DatabaseConnector()
         await connector.connect(
             host=conn.host, port=conn.port, database=conn.database_name,
-            username=conn.username, password=pw
+            username=conn.username, password=pw,
+            connection_id=str(conn.id)
         )
         
         # Requirement 2: Safe Execution with subquery wrap
@@ -189,7 +190,7 @@ async def preview_saved_query(
             natural_language_query=query.natural_language_query,
             query=query.query,
             query_result_snapshot=exec_result, # Fresh snapshot
-            execution_time_ms=exec_result["execution_time_ms"],
+            execution_time_ms=int(exec_result.get("execution_time_ms", 0)),
             row_count=exec_result["row_count"],
             created_at=query.created_at
         )

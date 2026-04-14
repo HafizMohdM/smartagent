@@ -54,16 +54,16 @@ class SQLExecutor:
         truncated = len(raw_results) > MAX_ROWS
         rows_to_return = raw_results[:MAX_ROWS]
 
-        # Truncate overly long cell values
+        # Format rows as dicts keyed by column name for frontend compatibility
         formatted_rows = []
         for row in rows_to_return:
-            formatted_row = []
+            formatted_row = {}
             for col in columns:
                 val = row[col]
                 str_val = str(val) if val is not None else None
                 if str_val and len(str_val) > MAX_CELL_LENGTH:
                     str_val = str_val[:MAX_CELL_LENGTH] + "…"
-                formatted_row.append(str_val if str_val != "None" else None)
+                formatted_row[col] = str_val if str_val != "None" else None
             formatted_rows.append(formatted_row)
 
         logger.info(

@@ -5,30 +5,91 @@ Takes the database schema and user question, returns a SQL SELECT statement.
 
 import logging
 import re
-from typing import Set
+from typing import Set, Optional, List
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from backend.config.settings import settings
+from backend.rag.embeddings.service import EmbeddingService
+from backend.data.retrieval.hybrid_retriever import HybridTableRetriever
 
 logger = logging.getLogger(__name__)
 
-SQL_GENERATION_PROMPT = """You are an expert SQL query generator.
-Given a database schema and a natural-language question, generate a valid
-PostgreSQL SELECT query that answers the question.
+SQL_GENERATION_PROMPT = """You are a production-grade database AI assistant.
 
-Database schema:
-{schema}
+---
 
-Strict Generation Rules:
-1. ONLY generate SELECT or WITH (CTE) statements. 
-2. Categorically FORBIDDEN: INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, etc.
-3. Use only the tables and columns explicitly listed in the schema.
-4. If the schema is insufficient to answer the question, do not guess. Instead, start your response with an explanation in plain text (no SQL).
-5. Always use proper JOINs via the Foreign Key (FK) information provided.
-6. Add LIMIT 50 to prevent excessive result sets unless explicitly asked otherwise.
-7. Return raw SQL or a plain text explanation. Do not use markdown code blocks."""
+STEP 1: DETECT INTENT
+
+Classify user query into ONE:
+
+1. METADATA_REQUEST
+   (Examples: show tables, list tables, what tables exist)
+
+2. TABLE_LOOKUP
+   (Examples: employees, attendance table)
+
+3. DATA_QUERY
+   (Examples: attendance of Hazel, employee names, salaries)
+
+---
+
+STEP 2: RESPONSE RULES
+
+A. METADATA_REQUEST:
+Return ONLY:
+TYPE: METADATA
+DATA:
+* table1
+* table2
+
+NO SQL and NO explanation.
+
+---
+
+B. TABLE_LOOKUP:
+Return ONLY:
+TYPE: LOOKUP
+DATA: <best_matching_table>
+
+NO SQL and NO explanation.
+
+---
+
+C. DATA_QUERY:
+Return ONLY:
+TYPE: SQL
+QUERY:
+SELECT ...
+
+STRICT RULES:
+* Use ONLY tables from SCHEMA
+* Use ONLY columns from SCHEMA
+* Use RELATIONSHIPS for joins
+* NEVER invent tables or columns
+* RETURN EXACTLY ONE SQL QUERY
+* DO NOT explain anything
+
+If data is missing:
+TYPE: ERROR
+MESSAGE: Required data not found in schema
+
+---
+
+STEP 3: FALLBACK (ANTI-FAIL)
+* If keyword match exists → use it
+* If semantic weak → still pick the best match
+* ONLY error if absolutely nothing matches
+
+---
+
+SCHEMA:
+{filtered_schema}
+
+RELATIONSHIPS:
+{filtered_relationships}
+"""
 
 
 class SQLGenerator:
@@ -41,8 +102,10 @@ class SQLGenerator:
             api_key=SecretStr(settings.OPENAI_API_KEY),
             temperature=0,
         )
+        self._embedding_service = EmbeddingService()
+        self._hybrid_retriever = HybridTableRetriever(self._embedding_service)
 
-    async def generate(self, user_query: str, schema: dict, error_context: str = None) -> str:
+    async def generate(self, user_query: str, schema: dict, connection_id: Optional[str] = None, error_context: str = None) -> str:
         """
         Generate a SQL query from a natural-language question.
 
@@ -54,20 +117,35 @@ class SQLGenerator:
         Returns:
             A SQL SELECT string.
         """
-        # Prune schema if it's too large to fit in the prompt comfortably (threshold lowered to 10)
-        schema_to_use = schema
-        if len(schema) > 10:
-            logger.info(f"Large schema detected ({len(schema)} tables). Pruning for prompt...")
-            schema_to_use = self._prune_schema(user_query, schema)
-            logger.info(f"Pruned schema to {len(schema_to_use)} relevant tables.")
-
-        schema_text = self._format_schema(schema_to_use)
+        # 1. Retrieve relevant tables using Hybrid Table Retrieval
+        relevant_table_names = await self._hybrid_retriever.aget_relevant_tables(
+            user_query, schema, connection_id=connection_id, limit=5
+        )
         
-        logger.info(f"Using following tables in prompt: {list(schema_to_use.keys())}")
+        # SMALL FIX: Force mapping for common failure terms
+        if "employee" in user_query.lower() and "employee_employee" in schema:
+            if "employee_employee" not in relevant_table_names:
+                # Add to start of list as high priority
+                relevant_table_names = ["employee_employee"] + relevant_table_names
+        
+        # If no tables matched, we still proceed to the LLM to allow for METADATA_REQUEST 
+        # or general assistance, providing a small sample of the schema.
+        if not relevant_table_names:
+            logger.info("No tables matched. Providing schema sample to LLM for intent detection.")
+            relevant_table_names = list(schema.keys())[:5]
+
+        # 2. Filter schema and format for the prompt
+        pruned_schema = {name: schema[name] for name in relevant_table_names if name in schema}
+        formatted_schema, formatted_relationships = await self._format_schema(pruned_schema, connection_id)
+        
+        logger.info(f"Using following tables in prompt: {list(pruned_schema.keys())}")
 
         messages = [
-            SystemMessage(content=SQL_GENERATION_PROMPT.format(schema=schema_text)),
-            HumanMessage(content=f"Question: {user_query}"),
+            SystemMessage(content=SQL_GENERATION_PROMPT.format(
+                filtered_schema=formatted_schema,
+                filtered_relationships=formatted_relationships
+            )),
+            HumanMessage(content=user_query),
         ]
 
         if error_context:
@@ -152,20 +230,44 @@ class SQLGenerator:
         # Return only the subset of the schema
         return {k: v for k, v in schema.items() if k in relevant_tables}
 
-    @staticmethod
-    def _format_schema(schema: dict) -> str:
+    async def _format_schema(self, schema: dict, connection_id: Optional[str] = None) -> (str, str):
         """Format schema dict into a readable string for the LLM prompt.
-        Optimized for token usage: compact representation.
+        Enforces the new production format: Table, Columns, Description, and RELATIONSHIPS.
         """
-        lines = []
-        for table_name, table_info in schema.items():
-            cols = table_info.get("columns", [])
-            col_names = ", ".join(f"{c['name']}" for c in cols)
-            fks = table_info.get("foreign_keys", [])
+        schema_lines = []
+        relationship_lines = []
+        
+        # Track all selected tables to filter relationships accurately
+        selected_tables = set(schema.keys())
+        
+        for table_name in selected_tables:
+            # Fetch metadata including pre-calculated relationships and description
+            metadata = await self._hybrid_retriever.get_table_metadata(table_name, connection_id)
+            
+            description = metadata.get("description", "No description available.")
+            col_list = metadata.get("columns", [])
+            if not col_list:
+                # Fallback to schema if metadata is missing columns
+                col_list = [c['name'] for c in schema[table_name].get("columns", [])]
+            
+            col_names = ", ".join(col_list)
 
-            lines.append(f"T:{table_name}({col_names})")
+            schema_lines.append(f"Table: {table_name}")
+            schema_lines.append(f"Columns: {col_names}")
+            schema_lines.append(f"Description: {description}\n")
+            
+            # Use pre-calculated relationships if available
+            fks = metadata.get("relationships", [])
             for fk in fks:
-                lines.append(
-                    f" FK:{fk['columns']}->{fk['referred_table']}({fk['referred_columns']})"
-                )
-        return "\n".join(lines)
+                referred_table = fk.get("referred_table")
+                # Only include relationships where BOTH tables are in the selected subset
+                if referred_table in selected_tables:
+                    relationship_lines.append(f"{table_name}.{fk['column']} → {referred_table}.{fk['referred_column']}")
+
+        # Combine Schema and RELATIONSHIPS section
+        unique_rel = sorted(list(set(relationship_lines)))
+        
+        formatted_schema = "\n".join(schema_lines)
+        formatted_relationships = "\n".join(unique_rel) if unique_rel else "No explicit relationships provided."
+        
+        return formatted_schema, formatted_relationships
