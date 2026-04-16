@@ -9,7 +9,12 @@ interface DashboardWidgetProps {
 }
 
 const DashboardWidget: React.FC<DashboardWidgetProps> = ({ report, onRemove }) => {
-  const [data, setData] = useState<any[]>([]);
+  const [chartConfig, setChartConfig] = useState<{
+    data: any[];
+    x_axis: string;
+    y_axis: string;
+    chart_type: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +23,13 @@ const DashboardWidget: React.FC<DashboardWidgetProps> = ({ report, onRemove }) =
     setError(null);
     try {
       const res = await getReportData(report.id);
-      setData(res.data);
+      // Always use axes from the API response (may be corrected by enforce_chart_logic)
+      setChartConfig({
+        data: res.data,
+        x_axis: res.chart_config?.x_axis ?? report.chart_config.x_axis,
+        y_axis: res.chart_config?.y_axis ?? report.chart_config.y_axis,
+        chart_type: res.chart_type,
+      });
     } catch (err: any) {
       setError(err.message || 'Failed to fetch report data.');
     } finally {
@@ -38,35 +49,35 @@ const DashboardWidget: React.FC<DashboardWidgetProps> = ({ report, onRemove }) =
           <span className="widget-type-badge">{report.chart_type}</span>
         </div>
         <div className="widget-actions">
-          <button className="btn-icon" onClick={fetchData} title="Refresh Live Data">🔄</button>
+          <button className="btn-icon" onClick={fetchData} title="Refresh">🔄</button>
           {onRemove && (
-            <button className="btn-icon" onClick={() => onRemove(report.id)} title="Remove Widget">✕</button>
+            <button className="btn-icon" onClick={() => onRemove(report.id)} title="Remove">✕</button>
           )}
         </div>
       </div>
-      
+
       <div className="widget-content">
         {loading ? (
           <div className="widget-loading"><LoadingDots /></div>
         ) : error ? (
           <div className="widget-error">
-            <span className="error-icon">⚠️</span>
+            <span>⚠️</span>
             <p>{error}</p>
             <button className="btn-retry" onClick={fetchData}>Retry</button>
           </div>
-        ) : (
-          <ChartContainer 
+        ) : chartConfig ? (
+          <ChartContainer
             config={{
-              type: report.chart_type,
-              chart_type: report.chart_type !== 'table' ? report.chart_type : undefined,
-              x_axis: report.chart_config.x_axis,
-              y_axis: report.chart_config.y_axis,
-              data: data
-            }} 
+              type: chartConfig.chart_type as any,
+              chart_type: chartConfig.chart_type !== 'table' ? chartConfig.chart_type as any : undefined,
+              x_axis: chartConfig.x_axis,
+              y_axis: chartConfig.y_axis,
+              data: chartConfig.data,
+            }}
           />
-        )}
+        ) : null}
       </div>
-      
+
       <div className="widget-footer">
         <span className="widget-date">Updated: {new Date().toLocaleTimeString()}</span>
       </div>

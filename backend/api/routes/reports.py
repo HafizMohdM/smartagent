@@ -92,11 +92,19 @@ async def get_report_data(
 
     try:
         results = await reports_crud.execute_report_query(db=db, report=report)
+
+        # Merge corrected axes into chart_config so the frontend uses them
+        corrected_config = dict(report.chart_config or {})
+        if "x_axis" in results:
+            corrected_config["x_axis"] = results["x_axis"]
+        if "y_axis" in results:
+            corrected_config["y_axis"] = results["y_axis"]
+
         return ReportDataResponse(
             report_id=report.id,
             data=results["rows"],
             chart_type=report.chart_type,
-            chart_config=report.chart_config,
+            chart_config=corrected_config,
             row_count=results["row_count"],
             execution_time_ms=int(results.get("execution_time_ms", 0))
         )
