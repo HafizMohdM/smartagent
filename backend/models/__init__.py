@@ -11,5 +11,7 @@ from backend.models.chat_message import ChatMessage
 from backend.models.knowledge_base import KnowledgeBaseDocument
 from backend.models.knowledge_base_chunk import KnowledgeBaseChunk
 from backend.models.report import Report
+from backend.models.dashboard import Dashboard, DashboardWidget
 
-__all__ = ["Base", "Tenant", "User", "DBConnection", "SavedQuery", "ChatSession", "ChatMessage", "KnowledgeBaseDocument", "KnowledgeBaseChunk", "Report"]
+__all__ = ["Base", "Tenant", "User", "DBConnection", "SavedQuery", "ChatSession", "ChatMessage",
+           "KnowledgeBaseDocument", "KnowledgeBaseChunk", "Report", "Dashboard", "DashboardWidget"]

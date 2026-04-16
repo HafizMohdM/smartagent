@@ -5,13 +5,13 @@ import logging
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from backend.models.db_connection import DBConnection
+from backend.models.db_connection import DBConnection, ConnectionStatus
 from backend.security.encryption import encrypt_password
 
 logger = logging.getLogger(__name__)
 
+
 async def get_connection(db: AsyncSession, connection_id: str, tenant_id: str) -> Optional[DBConnection]:
-    """Retrieve a specific connection if it belongs to the tenant."""
     result = await db.execute(
         select(DBConnection)
         .where(DBConnection.id == connection_id)
@@ -19,16 +19,32 @@ async def get_connection(db: AsyncSession, connection_id: str, tenant_id: str) -
     )
     return result.scalars().first()
 
-async def list_user_connections(db: AsyncSession, tenant_id: str) -> List[DBConnection]:
-    """Retrieve all connections for a specific tenant."""
+
+async def list_user_connections(
+    db: AsyncSession,
+    tenant_id: str,
+    approved_only: bool = False,
+) -> List[DBConnection]:
+    """List connections. approved_only=True filters to APPROVED status."""
+    q = select(DBConnection).where(DBConnection.tenant_id == tenant_id)
+    if approved_only:
+        q = q.where(DBConnection.status == ConnectionStatus.APPROVED)
+    result = await db.execute(q)
+    return list(result.scalars().all())
+
+
+async def list_pending_connections(db: AsyncSession, tenant_id: str) -> List[DBConnection]:
     result = await db.execute(
-        select(DBConnection).where(DBConnection.tenant_id == tenant_id)
+        select(DBConnection)
+        .where(DBConnection.tenant_id == tenant_id)
+        .where(DBConnection.status == ConnectionStatus.PENDING)
     )
     return list(result.scalars().all())
 
+
 async def create_connection(
-    db: AsyncSession, 
-    tenant_id: str, 
+    db: AsyncSession,
+    tenant_id: str,
     connection_name: str,
     db_type: str,
     host: str,
@@ -37,39 +53,86 @@ async def create_connection(
     username: str,
     password: str,
     ssl_enabled: bool = False,
-    extra_params: Optional[dict] = None
+    extra_params: Optional[dict] = None,
+    created_by: Optional[str] = None,
+    is_admin_owned: bool = False,
+    status: str = ConnectionStatus.PENDING,
 ) -> DBConnection:
-    """Create a new database connection for a tenant."""
     encrypted_password = encrypt_password(password)
-    
-    # Sanitize inputs to prevent connection strings with whitespace
-    connection_name = connection_name.strip()
-    host = host.strip()
-    database_name = database_name.strip()
-    username = username.strip()
-    
     conn = DBConnection(
         tenant_id=tenant_id,
-        connection_name=connection_name,
+        connection_name=connection_name.strip(),
         db_type=db_type,
-        host=host,
+        host=host.strip(),
         port=port,
-        database_name=database_name,
-        username=username,
+        database_name=database_name.strip(),
+        username=username.strip(),
         encrypted_password=encrypted_password,
         ssl_enabled=ssl_enabled,
-        extra_params=extra_params
+        extra_params=extra_params,
+        created_by=created_by,
+        is_admin_owned=is_admin_owned,
+        status=status,
     )
     db.add(conn)
     await db.commit()
     await db.refresh(conn)
     return conn
 
+
 async def delete_connection(db: AsyncSession, connection_id: str, tenant_id: str) -> bool:
-    """Delete a tenant's database connection."""
     conn = await get_connection(db, connection_id, tenant_id)
     if conn:
         await db.delete(conn)
         await db.commit()
         return True
     return False
+
+
+async def update_connection(
+    db: AsyncSession,
+    connection_id: str,
+    tenant_id: str,
+    connection_name: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    database_name: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    ssl_enabled: Optional[bool] = None,
+) -> Optional[DBConnection]:
+    conn = await get_connection(db, connection_id, tenant_id)
+    if not conn:
+        return None
+    if connection_name is not None:
+        conn.connection_name = connection_name.strip()
+    if host is not None:
+        conn.host = host.strip()
+    if port is not None:
+        conn.port = port
+    if database_name is not None:
+        conn.database_name = database_name.strip()
+    if username is not None:
+        conn.username = username.strip()
+    if password is not None:
+        conn.encrypted_password = encrypt_password(password)
+    if ssl_enabled is not None:
+        conn.ssl_enabled = ssl_enabled
+    await db.commit()
+    await db.refresh(conn)
+    return conn
+
+
+async def set_connection_status(
+    db: AsyncSession,
+    connection_id: str,
+    tenant_id: str,
+    new_status: str,
+) -> Optional[DBConnection]:
+    conn = await get_connection(db, connection_id, tenant_id)
+    if not conn:
+        return None
+    conn.status = new_status
+    await db.commit()
+    await db.refresh(conn)
+    return conn

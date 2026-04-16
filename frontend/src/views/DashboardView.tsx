@@ -3,36 +3,36 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
     getConnections, createConnection, deleteConnection,
+    approveConnection, rejectConnection,
     getSavedQueries, deleteSavedQuery, getSystemStatistics,
     type DBConnectionItem, type SavedQueryItem, type SystemStatistics
 } from '../api/client';
 import LoadingDots from '../components/LoadingDots';
 import ReportsView from './ReportsView';
+import EditConnectionModal from '../components/EditConnectionModal';
+import ApprovalsView from './ApprovalsView';
 
-type Tab = 'connections' | 'queries' | 'reports' | 'profile';
+type Tab = 'connections' | 'queries' | 'reports' | 'approvals' | 'profile';
 
 export default function DashboardView() {
-    const { username, isAdmin } = useAuth();
+    const { username, isAdmin, role } = useAuth();
     const navigate = useNavigate();
     const [activeTab, setActiveTab] = useState<Tab>('connections');
 
     return (
         <div className="dashboard-layout">
-            <aside className="dashboard-sidebar">
-                <div className="sidebar-title">Agent Alpha</div>
-                <nav className="sidebar-nav">
-                    {/* Chat Assistant - Navigation Shortcut */}
+            <aside className="sidebar">
+                <nav className="sidebar-nav" style={{ marginTop: '12px' }}>
+                    <div className="sidebar-divider">AGENT</div>
                     <button
                         className="sidebar-item sidebar-chat-btn"
                         onClick={() => navigate('/chat')}
-                        title="Start a new chat with the AI assistant"
                     >
                         <span className="sidebar-icon">💬</span>
                         <span>Chat Assistant</span>
                     </button>
 
-                    <div className="sidebar-divider">NAVIGATION</div>
-
+                    <div className="sidebar-divider">DATA</div>
                     <button
                         className={`sidebar-item ${activeTab === 'connections' ? 'sidebar-active' : ''}`}
                         onClick={() => setActiveTab('connections')}
@@ -55,6 +55,28 @@ export default function DashboardView() {
                         <span>Reports</span>
                     </button>
                     <button
+                        className="sidebar-item"
+                        onClick={() => navigate('/builder')}
+                    >
+                        <span className="sidebar-icon">🏗️</span>
+                        <span>Dashboard Builder</span>
+                    </button>
+
+                    {isAdmin && (
+                        <>
+                            <div className="sidebar-divider">ADMIN</div>
+                            <button
+                                className={`sidebar-item ${activeTab === 'approvals' ? 'sidebar-active' : ''}`}
+                                onClick={() => setActiveTab('approvals')}
+                            >
+                                <span className="sidebar-icon">✅</span>
+                                <span>Approvals</span>
+                            </button>
+                        </>
+                    )}
+
+                    <div className="sidebar-divider">USER</div>
+                    <button
                         className={`sidebar-item ${activeTab === 'profile' ? 'sidebar-active' : ''}`}
                         onClick={() => setActiveTab('profile')}
                     >
@@ -63,13 +85,14 @@ export default function DashboardView() {
                     </button>
                 </nav>
                 <div className="sidebar-footer">
-                    <span className="app-version">v1.2.0</span>
+                    <span className="app-version">v2.0.0</span>
                 </div>
             </aside>
             <section className="dashboard-content">
-                {activeTab === 'connections' && <ConnectionsPanel isAdmin={isAdmin} />}
+                {activeTab === 'connections' && <ConnectionsPanel isAdmin={isAdmin} role={role} />}
                 {activeTab === 'queries' && <QueriesPanel />}
                 {activeTab === 'reports' && <ReportsView />}
+                {activeTab === 'approvals' && isAdmin && <ApprovalsView />}
                 {activeTab === 'profile' && <ProfilePanel username={username} isAdmin={isAdmin} />}
             </section>
         </div>
@@ -78,40 +101,101 @@ export default function DashboardView() {
 
 /* ── Connections Panel ──────────────────────────────────────────── */
 
-function ConnectionsPanel({ isAdmin }: { isAdmin: boolean }) {
+function ConnectionsPanel({ isAdmin, role }: { isAdmin: boolean; role: string | null }) {
     const { setHasDatabaseConnection } = useAuth();
     const [connections, setConnections] = useState<DBConnectionItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
     const [error, setError] = useState('');
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [editingConn, setEditingConn] = useState<DBConnectionItem | null>(null);
+    const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+    const canCreate = isAdmin || role === 'manager' || role === 'user';
+    const canDelete = isAdmin;
 
     const fetchConnections = async () => {
         setLoading(true);
+        setError('');
         try {
             const data = await getConnections();
             setConnections(data);
-            setHasDatabaseConnection(data.length > 0);
-        } catch {
+            setHasDatabaseConnection(data.some(c => c.status === 'approved'));
+            if (data.length > 0 && selectedIds.length === 0) {
+                const stored = localStorage.getItem('chat_selected_db_ids');
+                if (stored) {
+                    try {
+                        const parsed = JSON.parse(stored);
+                        const validIds = parsed.filter((id: string) => data.some(db => db.id === id && db.status === 'approved'));
+                        if (validIds.length > 0) {
+                            setSelectedIds(validIds);
+                            return;
+                        }
+                    } catch (err) {}
+                }
+                const first = data.find(c => c.status === 'approved');
+                if (first) setSelectedIds([first.id]);
+            }
+        } catch (e) {
             setConnections([]);
             setHasDatabaseConnection(false);
-        } finally { setLoading(false); }
+            setError(e instanceof Error ? e.message : 'Failed to load connections');
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => { fetchConnections(); }, []);
+
+    useEffect(() => {
+        if (!loading) {
+            localStorage.setItem('chat_selected_db_ids', JSON.stringify(selectedIds));
+        }
+    }, [selectedIds, loading]);
+
+    const toggleSelect = (id: string) => {
+        setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    };
 
     const handleDelete = async (id: string) => {
         if (!window.confirm('Delete this connection?')) return;
         try {
             await deleteConnection(id);
             setConnections(c => {
-                const newC = c.filter(x => x.id !== id);
-                setHasDatabaseConnection(newC.length > 0);
-                return newC;
+                const next = c.filter(x => x.id !== id);
+                setHasDatabaseConnection(next.some(x => x.status === 'approved'));
+                return next;
             });
-        } catch (e) {
-            setError(e instanceof Error ? e.message : 'Delete failed');
-        }
+            setSelectedIds(prev => prev.filter(x => x !== id));
+        } catch (e) { setError(e instanceof Error ? e.message : 'Delete failed'); }
     };
+
+    const handleApprove = async (id: string) => {
+        setActionLoading(id + '_approve');
+        try {
+            const updated = await approveConnection(id);
+            setConnections(prev => prev.map(c => c.id === id ? updated : c));
+            setHasDatabaseConnection(true);
+        } catch (e) { setError(e instanceof Error ? e.message : 'Approve failed'); }
+        finally { setActionLoading(null); }
+    };
+
+    const handleReject = async (id: string) => {
+        setActionLoading(id + '_reject');
+        try {
+            const updated = await rejectConnection(id);
+            setConnections(prev => prev.map(c => c.id === id ? updated : c));
+        } catch (e) { setError(e instanceof Error ? e.message : 'Reject failed'); }
+        finally { setActionLoading(null); }
+    };
+
+    const statusBadge = (s: DBConnectionItem['status']) => {
+        const cls = { approved: 'status-badge-approved', pending: 'status-badge-pending', rejected: 'status-badge-rejected' };
+        const lbl = { approved: '✓ Approved', pending: '⏳ Pending', rejected: '✕ Rejected' };
+        return <span className={cls[s] ?? cls.pending}>{lbl[s] ?? s}</span>;
+    };
+
+    const pendingCount = connections.filter(c => c.status === 'pending').length;
 
     return (
         <div className="panel">
@@ -119,29 +203,43 @@ function ConnectionsPanel({ isAdmin }: { isAdmin: boolean }) {
                 <div>
                     <h2>Database Connections</h2>
                     <p className="panel-subtitle">
-                        {isAdmin
-                            ? 'Manage your database connections for the AI agent'
-                            : 'Available database connections'}
+                        {isAdmin ? 'Manage connections and approve requests' : 'Your database connections'}
+                        {isAdmin && pendingCount > 0 && (
+                            <span style={{
+                                marginLeft: '10px', background: '#f59e0b', color: '#fff',
+                                fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px',
+                                borderRadius: '20px'
+                            }}>
+                                {pendingCount} pending
+                            </span>
+                        )}
                     </p>
                 </div>
-                {/* Only admins can add connections */}
-                {isAdmin && (
+                {canCreate && (
                     <button className="btn-accent-sm" onClick={() => setShowForm(!showForm)}>
                         {showForm ? '✕ Cancel' : '+ Add Connection'}
                     </button>
                 )}
             </div>
 
-            {error && <div className="error-banner">{error}</div>}
-
-            {/* Non-admin info banner */}
-            {!isAdmin && (
-                <div className="info-banner">
-                    ℹ️ Contact an administrator to add or remove database connections.
+            {error && (
+                <div className="error-banner" style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    ⚠️ {error}
+                    <button onClick={fetchConnections} style={{
+                        background: 'transparent',
+                        border: '1px solid currentColor', borderRadius: '4px', padding: '2px 8px',
+                        cursor: 'pointer', fontSize: '0.8rem'
+                    }}>Retry</button>
                 </div>
             )}
 
-            {isAdmin && showForm && (
+            {!isAdmin && role !== 'manager' && (
+                <div className="info-banner">
+                    ℹ️ New connections require admin approval before use in chat.
+                </div>
+            )}
+
+            {showForm && (
                 <AddConnectionForm
                     onSuccess={() => { setShowForm(false); fetchConnections(); }}
                     onCancel={() => setShowForm(false)}
@@ -152,54 +250,126 @@ function ConnectionsPanel({ isAdmin }: { isAdmin: boolean }) {
                 <div className="panel-loading"><LoadingDots /></div>
             ) : connections.length === 0 && !showForm ? (
                 <div className="panel-empty" style={{ textAlign: 'center', padding: '3rem 1rem' }}>
-                    <div className="empty-icon" style={{ fontSize: '3rem', marginBottom: '1rem' }}>🗄️</div>
+                    <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🗄️</div>
                     <h3 style={{ marginBottom: '0.5rem' }}>No connections yet</h3>
-                    <p style={{ color: 'var(--text-color)', opacity: 0.7, marginBottom: '1.5rem' }}>
-                        {isAdmin
-                            ? 'Add a database connection to let the AI agent query your data.'
-                            : 'Ask an administrator to add a database connection.'}
+                    <p style={{ opacity: 0.7, marginBottom: '1.5rem' }}>
+                        {canCreate ? 'Add a database connection to get started.' : 'Ask an admin to add a connection.'}
                     </p>
-                    {isAdmin && (
+                    {canCreate && (
                         <button onClick={() => setShowForm(true)} className="btn-accent" style={{ padding: '0.5rem 1rem' }}>
-                            Connect a Database
+                            Add Connection
                         </button>
                     )}
                 </div>
             ) : !showForm && (
-                <div className="cards-grid">
-                    {connections.map(conn => (
-                        <div key={conn.id} className="db-card">
-                            <div className="db-card-header">
-                                <div className="db-card-type">{conn.db_type.toUpperCase()}</div>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    {isAdmin && (
-                                        <button
-                                            className="btn-delete"
-                                            onClick={() => handleDelete(conn.id)}
-                                            title="Delete connection"
-                                        >×</button>
+                <>
+                    {selectedIds.length > 0 && (
+                        <div style={{ marginBottom: '12px', fontSize: '0.82rem', color: 'var(--accent)', fontWeight: 600 }}>
+                            ✓ {selectedIds.length} connection{selectedIds.length > 1 ? 's' : ''} selected for chat
+                        </div>
+                    )}
+                    <div className="cards-grid">
+                        {connections.map(conn => {
+                            const isSelected = selectedIds.includes(conn.id);
+                            const isApproved = conn.status === 'approved';
+                            const canEdit = isAdmin || (role === 'manager' && !conn.is_admin_owned &&
+                                conn.created_by !== null);
+                            return (
+                                <div key={conn.id}
+                                    className={`db-card${isSelected ? ' selected' : ''}`}
+                                    onClick={() => isApproved && toggleSelect(conn.id)}
+                                    style={{
+                                        cursor: isApproved ? 'pointer' : 'default',
+                                        opacity: conn.status === 'rejected' ? 0.55 : 1
+                                    }}>
+                                    <div className="db-card-header">
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            {isApproved && (
+                                                <input type="checkbox" checked={isSelected}
+                                                    onChange={() => toggleSelect(conn.id)}
+                                                    onClick={e => e.stopPropagation()}
+                                                    style={{ cursor: 'pointer', accentColor: 'var(--accent)', width: '15px', height: '15px' }} />
+                                            )}
+                                            <div className="db-card-type">{conn.db_type.toUpperCase()}</div>
+                                        </div>
+                                        <div className="db-card-actions">
+                                            {canEdit && (
+                                                <button className="db-card-action-btn"
+                                                    onClick={e => { e.stopPropagation(); setEditingConn(conn); }}
+                                                    title="Edit">✏️</button>
+                                            )}
+                                            {canDelete && (
+                                                <button className="db-card-action-btn danger"
+                                                    onClick={e => { e.stopPropagation(); handleDelete(conn.id); }}
+                                                    title="Delete">🗑️</button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <h3 className="db-card-name">
+                                        {isSelected && <span className="db-card-check">✓</span>}
+                                        {conn.connection_name}
+                                    </h3>
+
+                                    <div className="db-card-details">
+                                        <div className="db-detail"><span className="db-label">Host</span><span>{conn.host}:{conn.port}</span></div>
+                                        <div className="db-detail"><span className="db-label">Database</span><span>{conn.database_name}</span></div>
+                                        <div className="db-detail"><span className="db-label">User</span><span>{conn.username}</span></div>
+                                        <div className="db-detail"><span className="db-label">SSL</span><span>{conn.ssl_enabled ? '✓ Enabled' : '✗ Off'}</span></div>
+                                    </div>
+
+                                    <div className="db-card-footer">
+                                        <span className="db-date">{new Date(conn.created_at).toLocaleDateString()}</span>
+                                        {statusBadge(conn.status)}
+                                    </div>
+
+                                    {/* Admin approval actions */}
+                                    {isAdmin && conn.status === 'pending' && (
+                                        <div style={{ display: 'flex', gap: '8px', padding: '10px 0 2px', borderTop: '1px solid var(--border)', marginTop: '8px' }}>
+                                            <button
+                                                onClick={e => { e.stopPropagation(); handleApprove(conn.id); }}
+                                                disabled={actionLoading === conn.id + '_approve'}
+                                                style={{
+                                                    flex: 1, padding: '6px', background: 'var(--success-soft)',
+                                                    border: '1px solid rgba(16,185,129,0.3)', borderRadius: '6px',
+                                                    color: '#065f46', fontWeight: 600, fontSize: '0.8rem',
+                                                    cursor: 'pointer', fontFamily: 'inherit'
+                                                }}>
+                                                {actionLoading === conn.id + '_approve' ? '…' : '✓ Approve'}
+                                            </button>
+                                            <button
+                                                onClick={e => { e.stopPropagation(); handleReject(conn.id); }}
+                                                disabled={actionLoading === conn.id + '_reject'}
+                                                style={{
+                                                    flex: 1, padding: '6px', background: 'var(--error-soft)',
+                                                    border: '1px solid rgba(239,68,68,0.25)', borderRadius: '6px',
+                                                    color: '#991b1b', fontWeight: 600, fontSize: '0.8rem',
+                                                    cursor: 'pointer', fontFamily: 'inherit'
+                                                }}>
+                                                {actionLoading === conn.id + '_reject' ? '…' : '✕ Reject'}
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
-                            </div>
-                            <h3 className="db-card-name">{conn.connection_name}</h3>
-                            <div className="db-card-details">
-                                <div className="db-detail"><span className="db-label">Host</span><span>{conn.host}:{conn.port}</span></div>
-                                <div className="db-detail"><span className="db-label">Database</span><span>{conn.database_name}</span></div>
-                                <div className="db-detail"><span className="db-label">User</span><span>{conn.username}</span></div>
-                                <div className="db-detail"><span className="db-label">SSL</span><span>{conn.ssl_enabled ? '✓ Enabled' : '✗ Off'}</span></div>
-                            </div>
-                            <div className="db-card-footer">
-                                <span className="db-date">{new Date(conn.created_at).toLocaleDateString()}</span>
-                            </div>
-                        </div>
-                    ))}
-                </div>
+                            );
+                        })}
+                    </div>
+                </>
+            )}
+
+            {editingConn && (
+                <EditConnectionModal
+                    conn={editingConn}
+                    onClose={() => setEditingConn(null)}
+                    onSaved={updated => {
+                        setConnections(prev => prev.map(c => c.id === updated.id ? updated : c));
+                        setEditingConn(null);
+                    }}
+                />
             )}
         </div>
     );
 }
-
-/* ── Add Connection Form ───────────────────────────────────────── */
 
 function AddConnectionForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
     const [form, setForm] = useState({
@@ -350,8 +520,8 @@ function QueriesPanel() {
                             </div>
                             <h3 className="query-card-title">{q.title}</h3>
                             <p className="query-card-desc">
-                                {q.natural_language_query.length > 120 
-                                    ? q.natural_language_query.substring(0, 117) + '...' 
+                                {q.natural_language_query.length > 120
+                                    ? q.natural_language_query.substring(0, 117) + '...'
                                     : q.natural_language_query}
                             </p>
                             <div className="query-card-footer">

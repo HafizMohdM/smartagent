@@ -54,9 +54,23 @@ class DatabaseTool(BaseTool):
 
     async def execute(self, params: Dict[str, Any], session_id: str) -> ToolResult:
         """Run the full database query pipeline."""
+        from backend.data.executor.generator import normalize_query, remove_limit
+
         question = params.get("question", "")
         if not question:
             return ToolResult(success=False, error="Missing 'question' parameter.")
+
+        # Detect report mode: analytical queries that should not be LIMITed
+        REPORT_KEYWORDS = {
+            "report", "summary", "total", "count", "average", "avg", "sum",
+            "all employees", "all records", "full data", "breakdown", "analytics",
+            "how many", "per department", "per month", "per year", "trend",
+        }
+        question_lower = question.lower()
+        report_mode = any(kw in question_lower for kw in REPORT_KEYWORDS)
+
+        # Normalize vague / name-only inputs before entering the pipeline
+        question = normalize_query(question)
 
         # 1. Get the connector for this session
         connector = self._connectors.get(session_id)
@@ -75,9 +89,10 @@ class DatabaseTool(BaseTool):
             logger.info("[Pipeline] Step 2: Generating SQL from user question")
             connection_id = getattr(connector, "_connection_id", None)
             sql = await self._sql_generator.generate(
-                user_query=question, 
-                schema=schema, 
-                connection_id=connection_id
+                user_query=question,
+                schema=schema,
+                connection_id=connection_id,
+                report_mode=report_mode,
             )
 
             # 4. Response Parsing & Validation
@@ -102,6 +117,10 @@ class DatabaseTool(BaseTool):
                 )
 
             # --- SQL Validation ---
+            # Safety net: strip LIMIT in report mode even if LLM ignored the instruction
+            if report_mode:
+                pure_sql = remove_limit(pure_sql)
+
             is_valid, reason = self._sql_validator.validate(pure_sql)
             if not is_valid:
                 return ToolResult(
@@ -109,12 +128,12 @@ class DatabaseTool(BaseTool):
                     error=f"SQL validation failed: {reason}",
                     metadata={"generated_sql": pure_sql},
                 )
-            
+
             # 5. SQL Execution & Self-Correction Loop
             logger.info("[Pipeline] Step 4: Executing SQL")
             from backend.data.executor import executor
             sql_executor = executor.SQLExecutor(connector)
-            
+
             try:
                 results = await sql_executor.execute(pure_sql)
                 return ToolResult(
@@ -124,15 +143,18 @@ class DatabaseTool(BaseTool):
                 )
             except Exception as e:
                 logger.warning(f"Initial SQL execution failed: {e}. Attempting self-correction...")
-                
+
                 # Retry once with error context
                 corrected_sql_raw = await self._sql_generator.generate(
                     user_query=question,
                     schema=schema,
                     connection_id=connection_id,
-                    error_context=str(e)
+                    error_context=str(e),
+                    report_mode=report_mode,
                 )
                 corrected_sql = SQLParser.extract_sql(corrected_sql_raw) or corrected_sql_raw
+                if report_mode:
+                    corrected_sql = remove_limit(corrected_sql)
                 
                 try:
                     results = await sql_executor.execute(corrected_sql)

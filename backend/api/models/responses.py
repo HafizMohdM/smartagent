@@ -32,6 +32,7 @@ class UserResponse(BaseModel):
     name: Optional[str]
     email: str
     role: str
+    status: str
     is_active: bool
     created_at: datetime
     last_login: Optional[datetime]
@@ -62,7 +63,7 @@ class ServiceListResponse(BaseModel):
 
 
 class DBConnectionResponse(BaseModel):
-    """Service connection result."""
+    """Database connection response — includes RBAC fields."""
     id: UUID
     connection_name: str
     db_type: str
@@ -71,8 +72,11 @@ class DBConnectionResponse(BaseModel):
     database_name: str
     username: str
     ssl_enabled: bool
+    status: str
+    is_admin_owned: bool
+    created_by: Optional[UUID] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 

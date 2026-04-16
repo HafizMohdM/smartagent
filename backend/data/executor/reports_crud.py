@@ -55,7 +55,11 @@ async def delete_report(db: AsyncSession, report_id: str, user_id: str) -> bool:
     return True
 
 async def execute_report_query(db: AsyncSession, report: Report) -> Dict[str, Any]:
-    """Execute the underlying saved query and return fresh data."""
+    """Execute the underlying saved query and return fresh data, enforcing chart aggregation."""
+    import re
+    from backend.data.executor.generator import validate_chart_sql, enforce_pie_sql
+    from backend.agent.utils.chart_generator import enforce_chart_logic, ChartGenerator
+
     # 1. Fetch the saved query
     query_result = await db.execute(select(SavedQuery).where(SavedQuery.id == report.saved_query_id))
     saved_query = query_result.scalar_one_or_none()
@@ -87,20 +91,79 @@ async def execute_report_query(db: AsyncSession, report: Report) -> Dict[str, An
             connection_id=str(conn.id)
         )
         executor = SQLExecutor(connector)
-        
-        # Requirement 8: Debug Logging
-        logger.info(f"[Report] Executing report query: {saved_query.query}")
-        
+
+        chart_type = (report.chart_type or "table").lower()
+        chart_cfg  = report.chart_config or {}
+        x_axis     = chart_cfg.get("x_axis", "")
+        y_axis     = chart_cfg.get("y_axis", "")
+        sql        = saved_query.query
+
+        logger.info(f"[Report] chart_type={chart_type} x={x_axis} y={y_axis}")
+        logger.info(f"[Report] Executing: {sql}")
+
+        # ── Step A: For non-table charts, ensure SQL is aggregated ──────────
+        if chart_type != "table":
+            upper = sql.upper()
+
+            # If no GROUP BY → wrap in aggregation subquery using saved axes
+            if "GROUP BY" not in upper and x_axis:
+                logger.warning("[Report] SQL missing GROUP BY — wrapping in aggregation subquery.")
+                sql = (
+                    f"SELECT {x_axis}, COUNT(*) AS value "
+                    f"FROM ({sql.rstrip(';')}) AS _report_sub "
+                    f"GROUP BY {x_axis} "
+                    f"ORDER BY value DESC"
+                )
+                y_axis = "value"
+
+            # Pie: enforce LIMIT 10 + ORDER BY
+            if chart_type == "pie":
+                sql = enforce_pie_sql(sql)
+
+        # ── Step B: Execute ─────────────────────────────────────────────────
         try:
-            results = await executor.execute(saved_query.query)
-            logger.info(f"[Report] Results extracted: {results.get('row_count', 0)} rows")
-            if results.get("rows"):
-                cols = list(results["rows"][0].keys())
-                logger.info(f"[Report] Extracted Column Names: {cols}")
-            return results
+            results = await executor.execute(sql)
         except Exception as exec_err:
             logger.error(f"[Report] SQL Execution Error: {exec_err}")
             raise ValueError("Failed to execute report query. Please verify query format.")
+
+        rows    = results.get("rows", [])
+        columns = results.get("columns", [])
+        logger.info(f"[Report] {results.get('row_count', 0)} rows, columns={columns}")
+
+        # ── Step C: enforce_chart_logic — fix non-numeric Y-axis ────────────
+        if chart_type != "table" and rows:
+            corrected_x, corrected_y, corrected_sql = enforce_chart_logic(
+                x_axis, y_axis, sql, rows
+            )
+            if corrected_sql != sql:
+                logger.warning(f"[Report] enforce_chart_logic rewrote SQL (y '{y_axis}' non-numeric).")
+                try:
+                    results   = await executor.execute(corrected_sql)
+                    rows      = results.get("rows", [])
+                    columns   = results.get("columns", [])
+                except Exception as fix_err:
+                    logger.warning(f"[Report] Corrected SQL failed: {fix_err}. Using original rows.")
+                x_axis = corrected_x
+                y_axis = corrected_y
+
+        # ── Step D: Cap data for chart types ────────────────────────────────
+        MAX_CHART = 50
+        MAX_TABLE = 500
+        if chart_type == "pie":
+            rows = rows[:10]
+        elif chart_type != "table":
+            rows = rows[:MAX_CHART]
+        else:
+            rows = rows[:MAX_TABLE]
+
+        results["rows"]      = rows
+        results["row_count"] = len(rows)
+        # Return corrected axis info so the frontend can use it
+        results["x_axis"]    = x_axis
+        results["y_axis"]    = y_axis
+
+        return results
 
     except ValueError:
         raise

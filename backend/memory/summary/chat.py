@@ -142,3 +142,17 @@ async def touch_session(db: AsyncSession, session_id: str) -> None:
     if session:
         session.updated_at = datetime.now(timezone.utc)
         await db.commit()
+
+
+async def update_session_name(db: AsyncSession, session_id: str, new_name: str) -> bool:
+    """Update a session's name. Verify existence first."""
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id)
+    )
+    session = result.scalars().first()
+    if session:
+        session.session_name = new_name
+        session.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return True
+    return False

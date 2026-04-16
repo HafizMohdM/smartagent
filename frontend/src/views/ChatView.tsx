@@ -3,14 +3,17 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
     getChatSessions,
     getChatSession,
+    renameChatSession,
     sendDbChatMessage,
     getConnections,
     createSavedQuery,
     type ChatSessionMetaResponse,
     type ChartConfig,
     type DBConnectionItem,
+    type MultiDBPayload,
 } from '../api/client';
 import MessageBubble from '../components/MessageBubble';
+import MultiDBResults from '../components/MultiDBResults';
 import LoadingDots from '../components/LoadingDots';
 
 export interface Message {
@@ -22,6 +25,7 @@ export interface Message {
     metadata?: any;
     user_query?: string;
     tool_used?: string;
+    multiDb?: MultiDBPayload;
     timestamp: Date;
 }
 
@@ -37,15 +41,19 @@ export default function ChatView() {
     const [loading, setLoading] = useState(false);
     const [loadingHistory, setLoadingHistory] = useState(false);
     
-    // Connection & Onboarding state
+    // Connection state — auto-select first available, no manual picker in chat
     const [connections, setConnections] = useState<DBConnectionItem[]>([]);
-    const [selectedConnectionId, setSelectedConnectionId] = useState<string>('');
+    const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([]);
     const [loadingConnections, setLoadingConnections] = useState(true);
 
     // Save Query state
     const [msgToSave, setMsgToSave] = useState<Message | null>(null);
     const [saveTitle, setSaveTitle] = useState('');
     const [isSaving, setIsSaving] = useState(false);
+
+    // Inline rename state
+    const [renamingId, setRenamingId] = useState<string | null>(null);
+    const [renameValue, setRenameValue] = useState('');
 
     const bottomRef = useRef<HTMLDivElement>(null);
     const autoExecDone = useRef(false);
@@ -54,9 +62,19 @@ export default function ChatView() {
         getConnections()
             .then(data => {
                 setConnections(data);
-                if (data.length > 0) {
-                    setSelectedConnectionId(data[0].id);
+                const stored = localStorage.getItem('chat_selected_db_ids');
+                let validIds: string[] = [];
+                if (stored) {
+                    try {
+                        const parsed = JSON.parse(stored);
+                        validIds = parsed.filter((id: string) => data.some(db => db.id === id && db.status === 'approved'));
+                    } catch(err) {}
                 }
+                if (validIds.length === 0) {
+                    const first = data.find(c => c.status === 'approved');
+                    if (first) validIds = [first.id];
+                }
+                setSelectedConnectionIds(validIds);
             })
             .catch(() => setConnections([]))
             .finally(() => setLoadingConnections(false));
@@ -65,7 +83,7 @@ export default function ChatView() {
 
     // Load all chat sessions for the selected connection
     const loadSessions = async (connId?: string) => {
-        const idToUse = connId || selectedConnectionId;
+        const idToUse = connId || selectedConnectionIds[0];
         if (!idToUse) return;
         
         try {
@@ -78,12 +96,12 @@ export default function ChatView() {
 
     // Reset chat state when selection changes
     useEffect(() => {
-        if (selectedConnectionId) {
+        if (selectedConnectionIds.length > 0) {
             setActiveSessionId(null);
             setMessages([]);
-            loadSessions(selectedConnectionId);
+            loadSessions(selectedConnectionIds[0]);
         }
-    }, [selectedConnectionId]);
+    }, [selectedConnectionIds.join(',')]);
 
     // (Removed direct call to loadSessions here, handled by selectedConnectionId effect)
 
@@ -143,7 +161,7 @@ export default function ChatView() {
         setInput('');
         setLoading(true);
 
-        if (!selectedConnectionId) {
+        if (selectedConnectionIds.length === 0) {
             alert("No database connection selected.");
             setLoading(false);
             return;
@@ -152,12 +170,17 @@ export default function ChatView() {
         try {
             const res = await sendDbChatMessage(
                 text,
-                selectedConnectionId,
+                selectedConnectionIds[0],
                 activeSessionId,
+                selectedConnectionIds,
             );
 
             const newSessionId = res.metadata?.session_id;
             const isNewSession = !activeSessionId && newSessionId;
+
+            // Extract multi-DB payload if present
+            const multiDb: MultiDBPayload | undefined =
+                res.agent_message.query_result_snapshot?.multi_db;
 
             const agentMsg: Message = {
                 role: 'assistant',
@@ -168,6 +191,7 @@ export default function ChatView() {
                 metadata: res.agent_message.query_result_snapshot,
                 user_query: res.agent_message.query_result_snapshot?.metadata?.user_query || undefined,
                 tool_used: res.tool_used || undefined,
+                multiDb,
                 timestamp: new Date(res.agent_message.created_at || new Date()),
             };
             setMessages(prev => [...prev, agentMsg]);
@@ -228,166 +252,182 @@ export default function ChatView() {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
     };
 
+    const startRename = (s: ChatSessionMetaResponse, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setRenamingId(s.session_id);
+        setRenameValue(s.session_name || '');
+    };
+
+    const commitRename = async (sessionId: string) => {
+        const trimmed = renameValue.trim();
+        if (trimmed) {
+            try {
+                await renameChatSession(sessionId, trimmed);
+                setSessions(prev => prev.map(s =>
+                    s.session_id === sessionId ? { ...s, session_name: trimmed } : s
+                ));
+            } catch { /* silent */ }
+        }
+        setRenamingId(null);
+    };
+
     const dbSuggestions = [
-        'Show me all tables in the database',
-        'What are the top 10 records by date?',
-        'Describe the schema of the users table',
-        'Count the total number of rows',
+        'Analyze employee attendance patterns',
+        'Compare sales performance across regions',
+        'Identify top 10 customers by revenue',
+        'Summarize recent inventory changes'
     ];
 
     const suggestions = dbSuggestions;
 
-    const isConnectionRequired = !loadingConnections && connections.length === 0;
+    const isConnectionRequired = !loadingConnections && connections.filter(c => c.status === 'approved').length === 0;
+    const approvedConnections = connections.filter(c => c.status === 'approved');
 
     return (
         <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
-            {/* Sidebar */}
-            <aside className="chat-sidebar" style={{ width: '280px', borderRight: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--card-bg)' }}>
-                {/* Header */}
-                <div style={{ padding: '1.5rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <div style={{ width: '32px', height: '32px', borderRadius: '8px', backgroundColor: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <span style={{ fontSize: '1.2rem', margin: 'auto' }}>🤖</span>
-                    </div>
-                    <div style={{ fontWeight: 600, fontSize: '1.1rem', letterSpacing: '-0.02em' }}>AI Analyst</div>
+
+            {/* ── Sidebar ── */}
+            <aside className="chat-sidebar">
+                <div style={{ padding: '18px 14px 14px', borderBottom: '1px solid var(--sidebar-border)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1rem', flexShrink: 0 }}>🤖</div>
+                    <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>AI Analyst</span>
                 </div>
 
-                {/* Connection Selector Hidden */}
-
-                {/* New Chat button - hidden if no database connected */}
                 {connections.length > 0 && (
-                    <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)' }}>
-                        <button
-                            id="new-chat-btn"
-                            className="btn-accent"
-                            style={{ width: '100%', padding: '0.5rem' }}
-                            onClick={handleNewChat}
-                        >
-                            + New Chat
-                        </button>
-                    </div>
+                    <button className="btn-accent" style={{ width: '100%', padding: '8px 12px', textAlign: 'left' }} onClick={handleNewChat}>
+                        + New Chat
+                    </button>
                 )}
 
-                {/* Session list - hidden if no database connected */}
-                {connections.length > 0 ? (
-                    <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
-                        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-color)', opacity: 0.5, marginBottom: '0.5rem', paddingLeft: '0.5rem', marginTop: '0.5rem' }}>
-                            History
+                <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }}>
+                    {/* Pending connections notice */}
+                    {connections.filter(c => c.status === 'pending').length > 0 && (
+                        <div style={{ margin: '8px 8px 4px', padding: '8px 10px', background: 'rgba(245,158,11,0.12)',
+                                      border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px',
+                                      fontSize: '0.75rem', color: '#f59e0b' }}>
+                            ⏳ {connections.filter(c => c.status === 'pending').length} connection(s) awaiting approval
                         </div>
-                        {sessions.length === 0 && (
-                            <div style={{ padding: '1rem', textAlign: 'center', opacity: 0.5, fontSize: '0.9rem' }}>
-                                No previous chats
+                    )}
+
+                    {approvedConnections.length > 0 ? (
+                        <>
+                            <div style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--sidebar-muted)', padding: '10px 8px 4px' }}>
+                                History
                             </div>
-                        )}
-                        {sessions.map(s => (
-                            <div
-                                key={s.session_id}
-                                onClick={() => setActiveSessionId(s.session_id)}
-                                style={{
-                                    padding: '0.75rem',
-                                    borderRadius: '6px',
-                                    cursor: 'pointer',
-                                    marginBottom: '0.25rem',
-                                    backgroundColor: activeSessionId === s.session_id
-                                        ? 'var(--primary-hover-color, rgba(99,102,241,0.1))'
-                                        : 'transparent',
-                                    borderLeft: activeSessionId === s.session_id
-                                        ? '3px solid var(--primary-color)'
-                                        : '3px solid transparent',
-                                }}
-                            >
-                                <div style={{ fontWeight: 500, fontSize: '0.95rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {s.session_name || 'Chat Session'}
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '2px' }}>
-                                    <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>
-                                        {new Date(s.updated_at).toLocaleDateString()}{' '}
+                            {sessions.length === 0 ? (
+                                <div style={{ padding: '16px 8px', textAlign: 'center', fontSize: '0.8rem', color: 'var(--sidebar-muted)' }}>No previous chats</div>
+                            ) : sessions.map(s => (
+                                <div key={s.session_id}
+                                     className={`chat-session-item ${activeSessionId === s.session_id ? 'active' : ''}`}
+                                     onClick={() => renamingId !== s.session_id && setActiveSessionId(s.session_id)}>
+                                    {renamingId === s.session_id ? (
+                                        <input
+                                            autoFocus
+                                            value={renameValue}
+                                            onChange={e => setRenameValue(e.target.value)}
+                                            onBlur={() => commitRename(s.session_id)}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') commitRename(s.session_id);
+                                                if (e.key === 'Escape') setRenamingId(null);
+                                            }}
+                                            onClick={e => e.stopPropagation()}
+                                            style={{
+                                                width: '100%', background: 'rgba(255,255,255,0.1)',
+                                                border: '1px solid rgba(255,255,255,0.3)', borderRadius: '5px',
+                                                color: '#fff', padding: '3px 7px', fontSize: '0.85rem',
+                                                outline: 'none', fontFamily: 'inherit',
+                                            }}
+                                        />
+                                    ) : (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                            <div className="session-name" style={{ flex: 1 }}>
+                                                {s.session_name || 'Chat Session'}
+                                            </div>
+                                            <button
+                                                onClick={e => startRename(s, e)}
+                                                title="Rename"
+                                                style={{
+                                                    background: 'transparent', border: 'none',
+                                                    color: 'var(--sidebar-muted)', cursor: 'pointer',
+                                                    padding: '2px 4px', borderRadius: '4px',
+                                                    fontSize: '0.75rem', opacity: 0,
+                                                    transition: 'opacity 0.15s',
+                                                }}
+                                                className="session-rename-btn"
+                                            >✏️</button>
+                                        </div>
+                                    )}
+                                    <div className="session-date">
+                                        {new Date(s.updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}{' '}
                                         {new Date(s.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </span>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
-                ) : (
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem', textAlign: 'center', opacity: 0.4 }}>
-                        <div style={{ fontSize: '0.9rem', color: 'red' }}>Connect a database to view chat history</div>
-                    </div>
-                )}
+                            ))}
+                        </>
+                    ) : (
+                        <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: '0.8rem', color: 'var(--sidebar-muted)' }}>
+                            {connections.length > 0
+                                ? 'No approved connections yet.\nAsk an admin to approve your connection.'
+                                : 'Connect a database to start chatting'}
+                        </div>
+                    )}
+                </div>
 
-
-                {/* Back button */}
-                <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)' }}>
+                <div style={{ padding: '10px 12px', borderTop: '1px solid var(--sidebar-border)' }}>
                     <button className="btn-ghost-sm" onClick={() => navigate('/dashboard')} style={{ width: '100%' }}>
-                         Back to Dashboard
+                        ← Dashboard
                     </button>
                 </div>
             </aside>
 
-            {/* Main Chat Area */}
-            <div className="chat-container" style={{ flex: 1, position: 'relative' }}>
+            {/* ── Main chat area ── */}
+            <div className="chat-container">
                 <div className="chat-messages">
                     {!loadingHistory && messages.length === 0 && (
                         <div className="empty-state">
                             {isConnectionRequired ? (
                                 <>
-                                    <div className="empty-icon-container">
-                                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <rect x="5" y="4" width="14" height="16" rx="1" stroke="#1e293b" strokeWidth="2" />
-                                            <path d="M5 9h14M5 15h14" stroke="#1e293b" strokeWidth="2" />
-                                            <path d="M11 6.5h2M11 12.5h2M11 18.5h2" stroke="#1e293b" strokeWidth="2" strokeLinecap="round" />
-                                        </svg>
-                                    </div>
-                                    <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b', marginBottom: '8px' }}>No connections yet</h2>
-                                    <p style={{ color: '#64748b', fontSize: '1rem', maxWidth: '420px', margin: '0 auto 24px', lineHeight: '1.5' }}>
-                                        Add a database connection to let the AI agent query your data.
-                                    </p>
-                                    <button 
-                                        className="btn-connect-empty"
-                                        onClick={() => navigate('/connections')}
-                                    >
-                                        Connect a Database
+                                    <div className="empty-icon">🗄️</div>
+                                    <h2>{connections.length > 0 ? 'No approved connections' : 'No connections yet'}</h2>
+                                    <p>{connections.length > 0
+                                        ? 'Your connections are pending admin approval. Check back soon.'
+                                        : 'Add a database connection to let the AI agent query your data.'}</p>
+                                    <button className="btn-connect-empty" onClick={() => navigate('/dashboard')}>
+                                        Go to Connections
                                     </button>
                                 </>
                             ) : (
                                 <>
-                                    <div className="empty-icon">📊</div>
-                                    <h2>AI Analyst</h2>
-                                    <p>
-                                        Ask me anything about your database. I can help with SQL queries, data visualization, and schema analysis.
-                                    </p>
-                                    {suggestions.length > 0 && (
-                                        <div className="suggestions">
-                                            {suggestions.map(s => (
-                                                <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>
-                                                    {s}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    )}
+                                    <div className="empty-icon">✨</div>
+                                    <h2>How can I help you?</h2>
+                                    <p>Ask me anything about your database — queries, analysis, or schema exploration.</p>
+                                    <div className="suggestions">
+                                        {suggestions.map(s => (
+                                            <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>{s}</button>
+                                        ))}
+                                    </div>
                                 </>
                             )}
                         </div>
                     )}
 
                     {loadingHistory && (
-                        <div style={{ padding: '2rem', textAlign: 'center' }}>
-                            <LoadingDots /> Loading history...
+                        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                            <LoadingDots />
                         </div>
                     )}
 
                     {messages.map((msg, i) => (
-                        <MessageBubble 
-                            key={i} 
-                            message={msg} 
-                            onSave={handleSaveQueryInitiate}
-                        />
+                        <div key={i}>
+                            <MessageBubble message={msg} onSave={handleSaveQueryInitiate} />
+                            {msg.multiDb && <MultiDBResults payload={msg.multiDb} />}
+                        </div>
                     ))}
 
                     {loading && (
                         <div className="bubble bubble-assistant">
                             <div className="bubble-avatar">AI</div>
-                            <div className="bubble-content">
-                                <LoadingDots />
-                            </div>
+                            <div className="bubble-content"><LoadingDots /></div>
                         </div>
                     )}
 
@@ -396,27 +436,21 @@ export default function ChatView() {
 
                 <form className="chat-input-bar" onSubmit={handleSubmit}>
                     <textarea
-                        id="chat-input"
                         className="chat-textarea"
-                        placeholder={isConnectionRequired ? "Connection Required..." : "Ask about your data... (Enter to send)"}
+                        placeholder={isConnectionRequired ? 'Connect a database first…' : 'Ask about your data…'}
                         value={input}
                         onChange={e => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
                         rows={1}
                         disabled={loading || loadingHistory || isConnectionRequired}
                     />
-                    <button
-                        id="send-btn"
-                        type="submit"
-                        className="btn-send"
-                        disabled={!input.trim() || loading || loadingHistory || isConnectionRequired}
-                        aria-label="Send message"
-                    >
-                        <span>⬆️</span>
+                    <button type="submit" className="btn-send"
+                            disabled={!input.trim() || loading || loadingHistory || isConnectionRequired}
+                            aria-label="Send">
+                        ↑
                     </button>
                 </form>
             </div>
-
 
             {/* Save Query Modal */}
             {msgToSave && (
@@ -425,34 +459,16 @@ export default function ChatView() {
                         <span className="modal-icon">💾</span>
                         <h2>Save to Library</h2>
                         <p>Give this query a title to save it to your library.</p>
-                        
                         <div style={{ margin: '1.5rem 0' }}>
                             <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 500 }}>Query Title</label>
-                            <input 
-                                type="text"
-                                className="input-field"
-                                value={saveTitle}
-                                onChange={e => setSaveTitle(e.target.value)}
-                                placeholder="Enter title..."
-                                autoFocus
-                            />
+                            <input type="text" className="input-field" value={saveTitle}
+                                   onChange={e => setSaveTitle(e.target.value)} placeholder="Enter title…" autoFocus />
                         </div>
-
                         <div className="modal-actions">
-                            <button
-                                className="btn-accent"
-                                onClick={confirmSaveQuery}
-                                disabled={isSaving || !saveTitle.trim()}
-                            >
-                                {isSaving ? 'Saving...' : 'Confirm Save'}
+                            <button className="btn-accent" onClick={confirmSaveQuery} disabled={isSaving || !saveTitle.trim()}>
+                                {isSaving ? 'Saving…' : 'Confirm Save'}
                             </button>
-                            <button
-                                className="btn-ghost"
-                                onClick={() => setMsgToSave(null)}
-                                disabled={isSaving}
-                            >
-                                Cancel
-                            </button>
+                            <button className="btn-ghost" onClick={() => setMsgToSave(null)} disabled={isSaving}>Cancel</button>
                         </div>
                     </div>
                 </div>
