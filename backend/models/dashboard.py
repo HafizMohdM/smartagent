@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import relationship
 from backend.models.base import Base
 
 
@@ -23,7 +24,9 @@ class DashboardWidget(Base):
 
     id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dashboard_id   = Column(UUID(as_uuid=True), ForeignKey("dashboards.id",    ondelete="CASCADE"), nullable=False, index=True)
-    saved_query_id = Column(UUID(as_uuid=True), ForeignKey("saved_queries.id", ondelete="SET NULL"), nullable=True)
+    query_id = Column(UUID(as_uuid=True), ForeignKey("queries.id", ondelete="SET NULL"), nullable=True)
+    
+    query = relationship("Query", back_populates="widgets")
 
     # Chart config
     title      = Column(String, nullable=False, default="Widget")

@@ -105,9 +105,18 @@ class DatabaseTool(BaseTool):
             if not pure_sql:
                 resp_type = SQLParser.get_response_type(sql)
                 if resp_type in ["metadata", "lookup"]:
+                    items = []
+                    parts = sql.split("DATA:")
+                    if len(parts) > 1:
+                        raw_items = parts[1].strip().split('\n')
+                        items = [item.strip("*- \t") for item in raw_items if item.strip()]
+                    else:
+                        items = [sql.split('\n', 1)[-1].strip()]
+                        
+                    results = {"rows": [{"Result": item} for item in items], "columns": ["Result"]}
                     return ToolResult(
                         success=True,
-                        data={"message": sql, "type": resp_type},
+                        data=results,
                         metadata={"generated_sql": None},
                     )
                 return ToolResult(

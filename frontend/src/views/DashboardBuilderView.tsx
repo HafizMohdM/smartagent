@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import GridLayout from 'react-grid-layout';
-import type { Layout as RGLLayout } from 'react-grid-layout';
-// react-grid-layout v2 type workaround
-const RGL = GridLayout as any;
+import { useState, useEffect, useCallback, useRef } from 'react';
+// react-grid-layout v2 — import the default export and cast to avoid readonly type conflicts
+import _GridLayout from 'react-grid-layout';
+const GridLayout = _GridLayout as any;
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -64,11 +63,33 @@ function AddWidgetModal({ dashboardId, queries, onAdd, onClose }: AddWidgetModal
   useEffect(() => {
     if (!queryId) { setCols([]); return; }
     const q = queries.find(q => q.id === queryId);
-    const snap = q?.query_result_snapshot;
     let rows: any[] = [];
-    if (Array.isArray(snap)) rows = snap;
-    else if (snap?.rows) rows = snap.rows;
-    else if (snap?.data) rows = snap.data;
+    if (q?.executions?.length) {
+       for (const exec of q.executions) {
+           if (exec.result_json) {
+               let s = exec.result_json;
+               if (typeof s === 'string') {
+                   try { s = JSON.parse(s); } catch (e) {}
+               }
+               
+               if (Array.isArray(s)) {
+                   rows = rows.concat(s);
+               } else if (s.multi_db) {
+                   if (s.multi_db.merged_rows && Array.isArray(s.multi_db.merged_rows)) {
+                       rows = rows.concat(s.multi_db.merged_rows);
+                   } else if (Array.isArray(s.multi_db.results)) {
+                       rows = rows.concat(s.multi_db.results.flatMap((r: any) => r.data || []));
+                   }
+               } else if (s.data && Array.isArray(s.data)) {
+                   rows = rows.concat(s.data);
+               } else if (s.data && s.data.rows && Array.isArray(s.data.rows)) {
+                   rows = rows.concat(s.data.rows);
+               } else if (s.rows && Array.isArray(s.rows)) {
+                   rows = rows.concat(s.rows);
+               }
+           }
+       }
+    }
     setCols(rows.length ? Object.keys(rows[0]) : []);
     setXAxis(''); setYAxis(''); setValCol('');
   }, [queryId, queries]);
@@ -81,7 +102,7 @@ function AddWidgetModal({ dashboardId, queries, onAdd, onClose }: AddWidgetModal
     try {
       const w = await addWidget({
         dashboard_id: dashboardId,
-        saved_query_id: queryId,
+        query_id: queryId,
         title, chart_type: chartType,
         config: { x_axis: xAxis || undefined, y_axis: yAxis || undefined, value_col: valCol || undefined },
         grid_x: 0, grid_y: 9999, grid_w: 6, grid_h: 4,
@@ -173,8 +194,8 @@ function AddWidgetModal({ dashboardId, queries, onAdd, onClose }: AddWidgetModal
 }
 
 // ── Single live widget ────────────────────────────────────────────
-function LiveWidget({ widget, dashboardId, onDelete, onRefresh }:
-  { widget: WidgetItem; dashboardId: string; onDelete: () => void; onRefresh: () => void }) {
+function LiveWidget({ widget, dashboardId, onDelete }:
+  { widget: WidgetItem; dashboardId: string; onDelete: () => void }) {
   const [data, setData] = useState<WidgetData>({ loading: true, error: null, result: null });
 
   const load = useCallback(async () => {
@@ -239,17 +260,21 @@ export default function DashboardBuilderView() {
   const [createName, setCreateName]   = useState('');
   const [createError, setCreateError] = useState('');
   const [savingConn, setSavingConn]   = useState(false);
-  const [containerW, setContainerW]   = useState(1200);
+  const [containerW, setContainerW]   = useState(() => Math.max(800, window.innerWidth - 224 - 64));
   const containerRef = useRef<HTMLDivElement>(null);
   const saveTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Measure container width for GridLayout
+  // Measure the grid wrapper width precisely
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    // Set immediately on mount
+    setContainerW(el.getBoundingClientRect().width);
     const obs = new ResizeObserver(entries => {
       const w = entries[0]?.contentRect.width;
-      if (w) setContainerW(w);
+      if (w > 0) setContainerW(w);
     });
-    if (containerRef.current) obs.observe(containerRef.current);
+    obs.observe(el);
     return () => obs.disconnect();
   }, []);
 
@@ -314,8 +339,9 @@ export default function DashboardBuilderView() {
     if (!active) return;
     setSavingConn(true);
     try {
-      await updateDashboard(active.id, { connection_id: connId } as any);
-      setActive(prev => prev ? { ...prev, connection_id: connId } : prev);
+      const payloadId = connId || null;
+      await updateDashboard(active.id, { connection_id: payloadId } as any);
+      setActive(prev => prev ? { ...prev, connection_id: payloadId } : prev);
     } finally { setSavingConn(false); }
   };
 
@@ -331,11 +357,11 @@ export default function DashboardBuilderView() {
   };
 
   // Debounced layout save
-  const handleLayoutChange = (layout: RGLLayout) => {
+  const handleLayoutChange = (layout: any) => {
     if (!active) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      const items = (layout as any[]).map((l: any) => ({
+      const items = layout.map((l: any) => ({
         id: l.i, grid_x: l.x, grid_y: l.y, grid_w: l.w, grid_h: l.h,
       }));
       try { await saveLayout(active.id, items); } catch { /* silent */ }
@@ -383,7 +409,7 @@ export default function DashboardBuilderView() {
       </aside>
 
       {/* ── Canvas ── */}
-      <div className="db-canvas" ref={containerRef}>
+      <div className="db-canvas">
         <div className="db-canvas-inner">
         {loading ? (
           <div className="db-canvas-loading"><LoadingDots /></div>
@@ -456,27 +482,31 @@ export default function DashboardBuilderView() {
                 <button className="btn-primary" onClick={() => setShowAdd(true)}>+ Add Widget</button>
               </div>
             ) : (
-              <RGL
-                className="db-grid"
-                layout={gridLayout}
-                cols={12}
-                rowHeight={80}
-                width={containerW - 64}
-                onLayoutChange={handleLayoutChange}
-                draggableHandle=".db-widget-header"
-                margin={[16, 16]}
+              <div
+                ref={containerRef}
+                style={{ width: '100%', flex: 1, minHeight: 0 }}
               >
-                {active.widgets.map(w => (
-                  <div key={w.id}>
-                    <LiveWidget
-                      widget={w}
-                      dashboardId={active.id}
-                      onDelete={() => handleWidgetDelete(w.id)}
-                      onRefresh={() => {}}
-                    />
-                  </div>
-                ))}
-              </RGL>
+                <GridLayout
+                  className="db-grid"
+                  layout={gridLayout}
+                  cols={12}
+                  rowHeight={80}
+                  width={containerW}
+                  onLayoutChange={handleLayoutChange}
+                  draggableHandle=".db-widget-header"
+                  margin={[16, 16]}
+                >
+                  {active.widgets.map(w => (
+                    <div key={w.id}>
+                      <LiveWidget
+                        widget={w}
+                        dashboardId={active.id}
+                        onDelete={() => handleWidgetDelete(w.id)}
+                      />
+                    </div>
+                  ))}
+                </GridLayout>
+              </div>
             )}
           </>
         )}

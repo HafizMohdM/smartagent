@@ -53,9 +53,27 @@ const GROUPS = ['Basic', 'Advanced', 'Distribution', 'Relationship', 'Hierarchy'
 
 function getSnapshotData(snapshot: any): any[] {
   if (!snapshot) return [];
-  if (Array.isArray(snapshot)) return snapshot;
-  if (snapshot.rows && Array.isArray(snapshot.rows)) return snapshot.rows;
-  if (snapshot.data && Array.isArray(snapshot.data)) return snapshot.data;
+  
+  let s = snapshot;
+  if (typeof s === 'string') {
+    try { s = JSON.parse(s); } catch(e) { return []; }
+  }
+  
+  // 1. Array-first (direct rows)
+  if (Array.isArray(s)) return s;
+  
+  // 2. Multi-DB flat structure (new orchestrator)
+  if (s.data && Array.isArray(s.data)) return s.data;
+  
+  // 3. Multi-DB legacy structure
+  if (s.multi_db) {
+    if (s.multi_db.merged_rows && Array.isArray(s.multi_db.merged_rows)) return s.multi_db.merged_rows;
+    if (Array.isArray(s.multi_db.results)) return s.multi_db.results.flatMap((r: any) => r.data || []);
+  }
+  
+  // 4. Single-DB SQLExecutor format
+  if (s.rows && Array.isArray(s.rows)) return s.rows;
+  
   return [];
 }
 
@@ -101,7 +119,7 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
         .then(data => {
           setPreviewData(data);
           setXAxis(''); setYAxis(''); setValueCol('');
-          if (!isChartable(data.query).ok) setChartType('table');
+          if (!isChartable(data.query_text).ok) setChartType('table');
         })
         .catch(() => setError('Failed to execute query. Please verify query format.'))
         .finally(() => setLoadingPreview(false));
@@ -109,9 +127,14 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
   }, [selectedQueryId]);
 
   const meta         = CHART_CATALOGUE.find(c => c.type === chartType)!;
-  const snapshotRows = getSnapshotData(previewData?.query_result_snapshot);
+  
+  // ── Dynamic Execution Support ──
+  // Prioritize top-level results, fallback to legacy execution snapshots
+  const snapshotRows = (previewData as any)?.results || 
+                       previewData?.executions?.flatMap(e => getSnapshotData(e.result_json)) || [];
+                       
   const allColumns   = snapshotRows.length > 0 ? Object.keys(snapshotRows[0]) : [];
-  const validation   = previewData ? isChartable(previewData.query) : { ok: true };
+  const validation   = previewData ? isChartable(previewData.query_text) : { ok: true };
 
   // Determine if preview can be shown
   const axesReady = meta.axes.every(ax => {
@@ -141,8 +164,7 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
         report_name: reportName,
         chart_type: chartType,
         chart_config: { x_axis: xAxis, y_axis: yAxis, value_col: valueCol },
-        saved_query_id: selectedQueryId,
-        connection_id: previewData!.connection_id,
+        query_id: selectedQueryId,
       });
       onSave();
     } catch (err: any) {

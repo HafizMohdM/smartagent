@@ -7,8 +7,8 @@ class ReportBase(BaseModel):
     report_name: str
     chart_type: str
     chart_config: Dict[str, Any]
-    saved_query_id: UUID
-    connection_id: UUID
+    query_id: Optional[UUID] = None
+    connection_id: Optional[UUID] = None
 
 class ReportCreateRequest(ReportBase):
     pass
@@ -23,11 +23,15 @@ class ReportResponse(ReportBase):
 
 class ReportDataResponse(BaseModel):
     report_id: UUID
-    data: List[Dict[str, Any]]
+    successful_data: List[Dict[str, Any]]
+    failed_sources: List[Dict[str, Any]] # [{"id": str, "error": str}]
     chart_type: str
     chart_config: Dict[str, Any]
     row_count: int
     execution_time_ms: int
+    cache_status: Optional[str] = "MISS"
+    request_id: Optional[str] = None
+
 
 class SystemStatisticsResponse(BaseModel):
     queries_today: int

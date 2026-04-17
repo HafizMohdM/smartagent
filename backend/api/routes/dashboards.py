@@ -104,7 +104,7 @@ async def add_widget(
         raise HTTPException(status_code=404, detail="Dashboard not found")
     w = await dashboards_crud.create_widget(
         db, dashboard_id=dashboard_id,
-        saved_query_id=str(req.saved_query_id) if req.saved_query_id else None,
+        query_id=str(req.query_id) if req.query_id else None,
         title=req.title, chart_type=req.chart_type,
         config=req.config.model_dump(exclude_none=True),
         grid_x=req.grid_x, grid_y=req.grid_y, grid_w=req.grid_w, grid_h=req.grid_h,
@@ -180,12 +180,12 @@ async def get_widget_data(
     w = await dashboards_crud.get_widget(db, widget_id, dashboard_id)
     if not w:
         raise HTTPException(status_code=404, detail="Widget not found")
-    if not w.saved_query_id:
+    if not w.query_id:
         raise HTTPException(status_code=400, detail="Widget has no saved query")
 
     # Reuse the report execution logic — build a duck-typed object
     from types import SimpleNamespace
-    from backend.models.saved_query import SavedQuery
+    from backend.models.query import Query
     from backend.models.db_connection import DBConnection
     from sqlalchemy.future import select as sa_select
 
@@ -195,7 +195,7 @@ async def get_widget_data(
         raise HTTPException(status_code=400, detail="Dashboard has no database connection")
 
     fake_report = SimpleNamespace(
-        saved_query_id=w.saved_query_id,
+        query_id=w.query_id,
         connection_id=conn_id,
         chart_type=w.chart_type,
         chart_config=w.config or {},

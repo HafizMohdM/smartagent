@@ -33,12 +33,45 @@ async def create_new_report(
         # Any other DB error
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+    # Resolve missing connection_id
+    final_conn_id = request.connection_id
+    if not final_conn_id and request.query_id:
+        from backend.data.executor import crud
+        from backend.models.db_connection import DBConnection
+        from sqlalchemy.future import select
+        
+        query_obj = await crud.get_query(db, str(request.query_id), str(current_user.id))
+        if query_obj and query_obj.executions:
+            db_name = query_obj.executions[0].database_name
+            conn_result = await db.execute(
+                select(DBConnection).where(
+                    DBConnection.database_name == db_name, 
+                    DBConnection.tenant_id == current_user.tenant_id
+                )
+            )
+            found = conn_result.scalars().first()
+            if found:
+                final_conn_id = found.id
+                
+        if not final_conn_id:
+            conn_result = await db.execute(
+                select(DBConnection).where(
+                    DBConnection.tenant_id == current_user.tenant_id,
+                    DBConnection.status == "approved"
+                )
+            )
+            found = conn_result.scalars().first()
+            if found:
+                final_conn_id = found.id
+            else:
+                raise HTTPException(status_code=400, detail="Cannot infer connection metadata.")
+
     report = await reports_crud.create_report(
         db=db,
         user_id=str(current_user.id),
         tenant_id=str(current_user.tenant_id),
-        connection_id=str(request.connection_id),
-        saved_query_id=str(request.saved_query_id),
+        connection_id=str(final_conn_id),
+        query_id=str(request.query_id) if request.query_id else None,
         report_name=request.report_name,
         chart_type=request.chart_type,
         chart_config=request.chart_config
@@ -82,36 +115,58 @@ async def get_report_metadata(
 @router.get("/{report_id}/data", response_model=ReportDataResponse)
 async def get_report_data(
     report_id: str,
+    limit: int = 1000,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Execute the report's underlying query and return fresh visual data."""
+    """Execute the report's underlying query and return fresh visual data with pagination."""
     report = await reports_crud.get_report_by_id(db=db, report_id=report_id, user_id=str(current_user.id))
     if not report:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
 
     try:
-        results = await reports_crud.execute_report_query(db=db, report=report)
-
-        # Merge corrected axes into chart_config so the frontend uses them
-        corrected_config = dict(report.chart_config or {})
-        if "x_axis" in results:
-            corrected_config["x_axis"] = results["x_axis"]
-        if "y_axis" in results:
-            corrected_config["y_axis"] = results["y_axis"]
+        results = await reports_crud.execute_report_query(
+            db=db, 
+            report=report,
+            limit=limit,
+            offset=offset,
+            request_id=f"req_{report_id}"
+        )
 
         return ReportDataResponse(
             report_id=report.id,
-            data=results["rows"],
+            successful_data=results["successful_data"],
+            failed_sources=results["failed_sources"],
             chart_type=report.chart_type,
-            chart_config=corrected_config,
+            chart_config=report.chart_config,
             row_count=results["row_count"],
-            execution_time_ms=int(results.get("execution_time_ms", 0))
+            execution_time_ms=int(results.get("execution_time_ms", 0)),
+            cache_status=results.get("cache_status", "MISS"),
+            request_id=results.get("request_id")
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        err_str = str(e)
+        # Guarantee 4: 413 Payload Handling
+        if "PAYLOAD_TOO_LARGE" in err_str:
+            _, rows, size = err_str.split("|")
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={
+                    "message": "Report data is too large for the current view.",
+                    "row_count": int(rows),
+                    "estimated_size_kb": float(size),
+                    "suggestion": "Try reducing the time range, applying more filters, or reducing the row limit."
+                }
+            )
+        
+        logger.error(f"[API] Report Data Error: {err_str}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_str)
     except Exception as e:
+        logger.error(f"[API] Internal Error: {str(e)}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to execute report query.")
+
+
 
 @router.delete("/{report_id}", response_model=StatusResponse)
 async def remove_report(
