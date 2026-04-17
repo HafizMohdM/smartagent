@@ -30,7 +30,7 @@ export default function SavedQueryDetailView() {
             const data = await getSavedQuery(id);
             setQuery(data);
             setEditTitle(data.title);
-            setEditSql(data.query);
+            setEditSql(data.query_text);
         } catch (err: any) {
             setError(err.message || 'Failed to fetch query details');
         } finally {
@@ -50,7 +50,7 @@ export default function SavedQueryDetailView() {
         try {
             const updated = await updateSavedQuery(id, { 
                 title: editTitle,
-                query: editSql
+                query_text: editSql
             });
             setQuery(updated);
             setIsEditing(false);
@@ -79,9 +79,16 @@ export default function SavedQueryDetailView() {
     if (error && !query) return <div className="error-banner" style={{ margin: '2rem' }}>{error}</div>;
     if (!query) return <div className="panel-empty">Query not found</div>;
 
-    const results = query.query_result_snapshot;
-    const rows = Array.isArray(results) ? results : (results?.data || results?.rows || []);
+    // ── Data Processing ──
+    let rows: any[] = query.results || [];
     const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+    
+    // Aggregated row count and DB names
+    const rowCount = query.execution_stats?.total_rows || query.executions?.reduce((acc, e) => acc + (e.row_count || 0), 0) || 0;
+    const dbNames = query.executions?.map(e => e.database_name).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Unknown';
+    
+    // SQL View (Source of Truth)
+    const sqlViews = query.generated_sql || query.query_text;
 
     return (
         <div className="detail-view animate-in">
@@ -122,8 +129,8 @@ export default function SavedQueryDetailView() {
             <div className="detail-content">
                 <div className="detail-meta-strip">
                     <div className="meta-item">
-                        <span className="meta-label">Database</span>
-                        <span className="meta-value">🗄️ {query.database_name}</span>
+                        <span className="meta-label">Database(s)</span>
+                        <span className="meta-value">🗄️ {dbNames}</span>
                     </div>
                     <div className="meta-item">
                         <span className="meta-label">Created By</span>
@@ -133,10 +140,10 @@ export default function SavedQueryDetailView() {
                         <span className="meta-label">Date</span>
                         <span className="meta-value">{new Date(query.created_at).toLocaleDateString()}</span>
                     </div>
-                    {query.row_count !== null && (
+                    {rowCount > 0 && (
                         <div className="meta-item">
-                            <span className="meta-label">Rows</span>
-                            <span className="meta-value">{query.row_count}</span>
+                            <span className="meta-label">Total Rows</span>
+                            <span className="meta-value">{rowCount}</span>
                         </div>
                     )}
                 </div>
@@ -158,7 +165,7 @@ export default function SavedQueryDetailView() {
                                     onChange={(e) => setEditSql(e.target.value)}
                                 />
                             ) : (
-                                <pre><code>{query.query}</code></pre>
+                                <pre><code>{sqlViews}</code></pre>
                             )}
                         </div>
                     )}
@@ -169,6 +176,34 @@ export default function SavedQueryDetailView() {
                         <h3>Query Results</h3>
                         {executing && <LoadingDots />}
                     </div>
+
+                    {/* Schema-validated failure banner */}
+                    {(query as any).failed_sources && (query as any).failed_sources.length > 0 && (
+                        <div className="partial-failure-banner">
+                            <span className="pf-icon">⚠️</span>
+                            <div className="pf-body">
+                                <strong>Some databases were skipped:</strong>
+                                <ul className="pf-list">
+                                    {(query as any).failed_sources.map((f: any, i: number) => {
+                                        let msg: string;
+                                        if (f.reason === 'TABLE_NOT_FOUND') {
+                                            const tables = Array.isArray(f.details) ? f.details.join(', ') : f.details;
+                                            msg = `Table(s) "${tables}" not found.`;
+                                        } else if (f.reason === 'TIMEOUT') {
+                                            msg = 'Query timed out.';
+                                        } else {
+                                            msg = 'Execution error.';
+                                        }
+                                        return (
+                                            <li key={i} title={f.error || ''}>
+                                                <strong>{f.database_name || f.id}:</strong> {msg}
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </div>
+                        </div>
+                    )}
 
                     {error && <div className="error-banner" style={{ marginBottom: '1rem' }}>{error}</div>}
 
@@ -238,6 +273,14 @@ export default function SavedQueryDetailView() {
                 .data-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
                 .null-val { font-style: italic; color: var(--text-muted); opacity: 0.6; }
                 .empty-results { padding: 3rem; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
+                
+                .partial-failure-banner { display: flex; gap: 0.75rem; padding: 0.75rem 1.25rem; margin: 0 1rem; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.25); border-radius: 8px; }
+                .pf-icon { font-size: 1.1rem; flex-shrink: 0; }
+                .pf-body { font-size: 0.82rem; color: var(--text-secondary); }
+                .pf-body strong { color: var(--text-primary); }
+                .pf-list { margin: 4px 0 0 0; padding-left: 1rem; list-style: disc; }
+                .pf-list li { margin-bottom: 2px; }
+                .pf-list li strong { color: var(--text-primary); }
                 
                 @media (max-width: 768px) {
                     .detail-header { flex-direction: column; align-items: flex-start; gap: 1rem; }

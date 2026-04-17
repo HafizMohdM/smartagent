@@ -64,11 +64,11 @@ async def list_widgets(db: AsyncSession, dashboard_id: str) -> List[DashboardWid
 
 
 async def create_widget(db: AsyncSession, dashboard_id: str,
-                         saved_query_id: Optional[str], title: str,
+                         query_id: Optional[str], title: str,
                          chart_type: str, config: Dict[str, Any],
                          grid_x: int, grid_y: int, grid_w: int, grid_h: int) -> DashboardWidget:
     w = DashboardWidget(
-        dashboard_id=dashboard_id, saved_query_id=saved_query_id,
+        dashboard_id=dashboard_id, query_id=query_id,
         title=title, chart_type=chart_type, config=config,
         grid_x=grid_x, grid_y=grid_y, grid_w=grid_w, grid_h=grid_h,
     )

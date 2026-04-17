@@ -13,7 +13,7 @@ class WidgetConfig(BaseModel):
 
 class WidgetCreateRequest(BaseModel):
     dashboard_id:   UUID
-    saved_query_id: Optional[UUID] = None
+    query_id: Optional[UUID] = None
     title:      str = "Widget"
     chart_type: str = "bar"
     config:     WidgetConfig = WidgetConfig()
@@ -34,7 +34,7 @@ class WidgetUpdateRequest(BaseModel):
 class WidgetResponse(BaseModel):
     id:             UUID
     dashboard_id:   UUID
-    saved_query_id: Optional[UUID]
+    query_id: Optional[UUID]
     title:      str
     chart_type: str
     config:     Dict[str, Any]

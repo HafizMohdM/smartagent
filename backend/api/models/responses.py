@@ -20,10 +20,13 @@ class StatusResponse(BaseModel):
 
 class LoginResponse(BaseModel):
     """Successful login response with JWT token."""
+    success: bool = True
+    token: Optional[str] = None
     access_token: str
     token_type: str = "bearer"
     session_id: str
     role: str
+    user: Optional[Dict[str, Any]] = None
     expires_in: int = Field(description="Token expiry in seconds")
 
 class UserResponse(BaseModel):
@@ -82,19 +85,35 @@ class DBConnectionResponse(BaseModel):
 
 # ── Saved Queries ───────────────────────────────────────────────────
 
+class QueryExecutionResponse(BaseModel):
+    id: UUID
+    query_id: UUID
+    database_name: str
+    sql: Optional[str] = None
+    status: str
+    # result_json REMOVED - data must be fetched dynamically via /data endpoints
+    error: Optional[str] = None
+
+    execution_time_ms: Optional[int] = None
+    row_count: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 class SavedQueryResponse(BaseModel):
     id: UUID
-    connection_id: UUID
     tenant_id: UUID
-    database_name: str
     username: str
     title: str
-    natural_language_query: str
-    query: str
-    query_result_snapshot: Optional[Any] = None
-    execution_time_ms: Optional[int]
-    row_count: Optional[int]
+    query_text: str
     created_at: datetime
+    executions: List[QueryExecutionResponse] = []
+    
+    # NEW fields for dynamic execution (removed static result_json from executions)
+    results: Optional[List[Any]] = None
+    failed_sources: Optional[List[Dict[str, Any]]] = None
+    execution_stats: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True

@@ -12,7 +12,7 @@ export default function MessageBubble({ message, onSave }: { message: Message, o
     // Use SQL from message root or metadata fallback
     const effectiveSql = message.sql || message.metadata?.generated_sql || message.metadata?.sql;
     const isMultiDb = !!message.multiDb || message.tool_used === 'multi_db_query';
-    const canSave = !isUser && !isMultiDb && (!!effectiveSql || !!message.chart || message.tool_used === 'database_query');
+    const canSave = !isUser && (!!effectiveSql || !!message.chart || message.tool_used === 'database_query' || isMultiDb);
     
     // Extract table data if available
     const tableData = message.metadata?.data;

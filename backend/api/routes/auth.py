@@ -56,6 +56,14 @@ async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered.")
 
+    # Resolve the default tenant — every self-registered user joins the single tenant
+    from backend.models.tenant import Tenant
+    from sqlalchemy.future import select as sa_select
+    result = await db.execute(sa_select(Tenant).limit(1))
+    tenant = result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=500, detail="No tenant configured. Contact an administrator.")
+
     hashed = hash_password(request.password)
     user = await create_user(
         db=db,
@@ -63,6 +71,7 @@ async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_
         password_hash=hashed,
         name=request.name,
         phone_number=getattr(request, "phone_number", None),
+        tenant_id=str(tenant.id),
         role=request.role or "user",
         status=UserStatus.PENDING,
         is_active=False,
@@ -114,9 +123,12 @@ async def login(request: LoginRequest, req: Request, db: AsyncSession = Depends(
 
     logger.info(f"Login: {user.email} role={user.role}")
     return LoginResponse(
+        success=True,
+        token=token,
         access_token=token,
         session_id=session_id,
         role=user.role,
+        user={"id": str(user.id), "email": user.email, "role": user.role},
         expires_in=settings.JWT_EXPIRY_MINUTES * 60,
     )
 

@@ -48,6 +48,15 @@ class Settings(BaseSettings):
         description="Comma-separated allowed CORS origins",
     )
 
+    # --- Production Guardrails ---
+    MAX_PARALLEL_QUERIES: int = Field(default=5, description="Max concurrent DB executions globally")
+    MAX_CONNECTIONS_PER_REPORT: int = Field(default=15, description="Max DB connections per single report")
+    DEFAULT_DB_TIMEOUT: float = Field(default=5.0, description="Timeout per database connection in seconds")
+    GLOBAL_QUERY_TIMEOUT: float = Field(default=30.0, description="Absolute timeout for all connections in a report")
+    SLOW_QUERY_THRESHOLD_MS: int = Field(default=2000, description="Threshold to log a query as slow")
+    MAX_RESPONSE_SIZE_MB: int = Field(default=5, description="Maximum allowed response size in Megabytes")
+
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

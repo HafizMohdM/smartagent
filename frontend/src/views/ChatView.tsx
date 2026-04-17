@@ -287,7 +287,7 @@ export default function ChatView() {
         <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
 
             {/* ── Sidebar ── */}
-            <aside className="chat-sidebar">
+            <aside className="app-sidebar">
                 <div style={{ padding: '18px 14px 14px', borderBottom: '1px solid var(--sidebar-border)', display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1rem', flexShrink: 0 }}>🤖</div>
                     <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>AI Analyst</span>

@@ -17,9 +17,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
 
-  // 10-second timeout on every request
+  // 60-second timeout on every request to allow complex AI agent reflection loops
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  const timer = setTimeout(() => controller.abort(), 60_000);
 
   let res: Response;
   try {
@@ -54,6 +54,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 // ── Auth ──────────────────────────────────────────────────────────
 
 export interface LoginResponse {
+  success?: boolean;
+  token?: string;
   access_token: string;
   session_id: string;
   role: string;
@@ -339,19 +341,36 @@ export async function rejectConnection(id: string): Promise<DBConnectionItem> {
 
 // ── Saved Queries ────────────────────────────────────────────────
 
-export interface SavedQueryItem {
+export interface QueryExecutionItem {
   id: string;
-  connection_id: string;
-  tenant_id: string;
+  query_id: string;
   database_name: string;
-  username: string;
-  title: string;
-  natural_language_query: string;
-  query: string;
-  query_result_snapshot: any | null;
+  sql: string | null;
+  status: string;
+  result_json: any | null;
+  error: string | null;
   execution_time_ms: number | null;
   row_count: number | null;
   created_at: string;
+}
+
+export interface SavedQueryItem {
+  id: string;
+  tenant_id: string;
+  username: string;
+  title: string;
+  query_text: string;
+  generated_sql?: string;
+  created_at: string;
+  executions: QueryExecutionItem[];
+  
+  // NEW Dynamic Execution Fields
+  results: any[] | null;
+  failed_sources?: { id: string; database_name?: string; error: string }[];
+  execution_stats?: {
+    time_ms: number;
+    total_rows: number;
+  };
 }
 
 export async function getSavedQueries(): Promise<SavedQueryItem[]> {
@@ -375,7 +394,7 @@ export async function getSavedQuery(id: string): Promise<SavedQueryItem> {
 
 export interface SavedQueryUpdateRequest {
   title?: string;
-  query?: string;
+  query_text?: string;
 }
 
 export async function updateSavedQuery(id: string, data: SavedQueryUpdateRequest): Promise<SavedQueryItem> {
@@ -387,6 +406,7 @@ export async function updateSavedQuery(id: string, data: SavedQueryUpdateRequest
 
 export interface SavedQueryCreateRequest {
   connection_id: string;
+  connection_ids?: string[];
   title: string;
   natural_language_query: string;
   query: string;
@@ -414,7 +434,7 @@ export interface ReportItem {
     value_col?: string;
     grouping?: string;
   };
-  saved_query_id: string;
+  query_id: string;
   connection_id: string;
   user_id: string;
   tenant_id: string;
@@ -423,11 +443,14 @@ export interface ReportItem {
 
 export interface ReportDataResponse {
   report_id: string;
-  data: any[];
+  successful_data: any[];
+  failed_sources: { id: string; database_name?: string; error: string }[];
   chart_type: string;
   chart_config: any;
   row_count: number;
   execution_time_ms: number;
+  cache_status?: string;
+  request_id?: string;
 }
 
 export async function getReports(): Promise<ReportItem[]> {
@@ -438,8 +461,8 @@ export async function createReport(data: {
   report_name: string;
   chart_type: string;
   chart_config: any;
-  saved_query_id: string;
-  connection_id: string;
+  query_id: string;
+  connection_id?: string;
 }): Promise<ReportItem> {
   return request<ReportItem>('/api/reports', {
     method: 'POST',
@@ -451,8 +474,8 @@ export async function deleteReport(id: string): Promise<void> {
   await request(`/api/reports/${id}`, { method: 'DELETE' });
 }
 
-export async function getReportData(id: string): Promise<ReportDataResponse> {
-  return request<ReportDataResponse>(`/api/reports/${id}/data`);
+export async function getReportData(id: string, limit: number = 1000, offset: number = 0): Promise<ReportDataResponse> {
+  return request<ReportDataResponse>(`/api/reports/${id}/data?limit=${limit}&offset=${offset}`);
 }
 
 export interface SystemStatistics {
@@ -516,7 +539,7 @@ export interface DashboardItem {
 export interface WidgetItem {
   id: string;
   dashboard_id: string;
-  saved_query_id: string | null;
+  query_id: string | null;
   title: string;
   chart_type: string;
   config: { x_axis?: string; y_axis?: string; value_col?: string; [k: string]: any };
@@ -534,7 +557,7 @@ export interface DashboardDetail extends DashboardItem {
 
 export interface WidgetCreateRequest {
   dashboard_id: string;
-  saved_query_id?: string;
+  query_id?: string;
   title: string;
   chart_type: string;
   config: { x_axis?: string; y_axis?: string; value_col?: string };
@@ -594,6 +617,6 @@ export async function saveLayout(dashboardId: string, layout: LayoutItem[]): Pro
   });
 }
 
-export async function getWidgetData(dashboardId: string, widgetId: string): Promise<ReportDataResponse> {
-  return request<ReportDataResponse>(`/api/dashboards/${dashboardId}/widgets/${widgetId}/data`);
+export async function getWidgetData(dashboardId: string, widgetId: string, limit: number = 1000, offset: number = 0): Promise<ReportDataResponse> {
+  return request<ReportDataResponse>(`/api/dashboards/${dashboardId}/widgets/${widgetId}/data?limit=${limit}&offset=${offset}`);
 }

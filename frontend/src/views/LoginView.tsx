@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { login, register } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import LoadingDots from '../components/LoadingDots';
 
 export default function LoginView() {
@@ -14,15 +15,32 @@ export default function LoginView() {
     const [success, setSuccess]   = useState('');
     const [loading, setLoading]   = useState(false);
 
+    const navigate = useNavigate();
+
     const doLogin = async (emailOrUser: string, pwd: string) => {
         setError(''); setSuccess('');
         setLoading(true);
         try {
+            console.log("LOGIN PAYLOAD:", { email: emailOrUser, password: "***" });
             const res = await login(emailOrUser, pwd);
-            handleLoginSuccess(res.access_token, res.session_id, emailOrUser, res.role);
-        } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : 'Login failed');
-        } finally { setLoading(false); }
+            console.log("LOGIN RESPONSE:", res);
+
+            if (res?.token || res?.success || res?.access_token) {
+                const finalToken = res.token || res.access_token;
+                handleLoginSuccess(finalToken, res.session_id, emailOrUser, res.role);
+                navigate('/dashboard');
+            } else {
+                setError('Invalid credentials');
+                alert('Invalid credentials');
+            }
+        } catch (err: any) {
+            console.error("LOGIN ERROR:", err);
+            const msg = err?.message || 'Login failed';
+            setError(msg);
+            alert(msg);
+        } finally { 
+            setLoading(false); 
+        }
     };
 
     const handleSubmit = async (e: FormEvent) => {

@@ -21,7 +21,7 @@ export default function DashboardView() {
 
     return (
         <div className="dashboard-layout">
-            <aside className="sidebar">
+            <aside className="app-sidebar">
                 <nav className="sidebar-nav" style={{ marginTop: '12px' }}>
                     <div className="sidebar-divider">AGENT</div>
                     <button
@@ -515,14 +515,14 @@ function QueriesPanel() {
                     {queries.map(q => (
                         <div key={q.id} className="query-card-v2" onClick={() => navigate(`/saved-query/${q.id}`)}>
                             <div className="query-card-header">
-                                <div className="query-card-db">{q.database_name}</div>
+                                <div className="query-card-db">{q.executions?.map(e => e.database_name).join(', ') || 'Unknown'}</div>
                                 <button className="btn-delete-icon" onClick={(e) => handleDelete(q.id, e)} title="Delete query">×</button>
                             </div>
                             <h3 className="query-card-title">{q.title}</h3>
                             <p className="query-card-desc">
-                                {q.natural_language_query.length > 120
-                                    ? q.natural_language_query.substring(0, 117) + '...'
-                                    : q.natural_language_query}
+                                {q.query_text.length > 120
+                                    ? q.query_text.substring(0, 117) + '...'
+                                    : q.query_text}
                             </p>
                             <div className="query-card-footer">
                                 <div className="query-card-meta">
