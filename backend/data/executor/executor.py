@@ -5,76 +5,101 @@ and formats results for the agent.
 
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from backend.data.connector.connector import DatabaseConnector
+from backend.data.executor.contract import validate_db_result, get_error_fallback
 
 logger = logging.getLogger(__name__)
 
-MAX_ROWS = 100   # Safety cap on returned rows
-MAX_CELL_LENGTH = 200  # Truncate overly long cell values
+MAX_ROWS = 1000   # Production cap on returned rows
+MAX_CELL_LENGTH = 500  # Truncate overly long cell values
 
 
 class SQLExecutor:
-    """Executes validated SQL and returns formatted results."""
+    """Executes validated SQL and returns strictly formatted results."""
 
     def __init__(self, connector: DatabaseConnector):
         self._connector = connector
 
-    async def execute(self, sql: str) -> Dict[str, Any]:
+    async def execute(self, sql: str, trace_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Execute a SQL query and return structured results.
+        Execute a SQL query and return strictly structured results.
 
         Returns:
             {
-                "columns": [...],
-                "rows": [[...], ...],
-                "row_count": int,
-                "execution_time_ms": float,
-                "truncated": bool,
+                "rows": List[Dict],
+                "columns": List[str],
+                "meta": {
+                    "row_count": int,
+                    "execution_time_ms": float,
+                    "sql": str,
+                    "truncated": bool,
+                    "version": "v1"
+                }
             }
         """
+        ctx = trace_context or {}
         if not self._connector.is_connected:
             raise ConnectionError("Database is not connected.")
 
         start = time.perf_counter()
-        raw_results = await self._connector.execute_query(sql)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        try:
+            raw_results = await self._connector.execute_query(sql)
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
 
-        if not raw_results:
-            return {
-                "columns": [],
-                "rows": [],
-                "row_count": 0,
-                "execution_time_ms": round(elapsed_ms, 2),
-                "truncated": False,
+            if not raw_results:
+                result = {
+                    "rows": [],
+                    "columns": [],
+                    "meta": {
+                        "row_count": 0,
+                        "execution_time_ms": elapsed_ms,
+                        "sql": sql,
+                        "truncated": False,
+                        "version": "v1"
+                    }
+                }
+                return validate_db_result(result, source="executor", trace_context=ctx)
+
+            columns = list(raw_results[0].keys())
+            truncated = len(raw_results) > MAX_ROWS
+            rows_to_process = raw_results[:MAX_ROWS]
+
+            # Format rows as dicts and enforce cell limits
+            formatted_rows = []
+            for row in rows_to_process:
+                formatted_row = {}
+                for col in columns:
+                    val = row[col]
+                    # We keep non-string types as they are (int, float, bool, etc.)
+                    # only truncate if it's a long string
+                    if isinstance(val, str) and len(val) > MAX_CELL_LENGTH:
+                        val = val[:MAX_CELL_LENGTH] + "…"
+                    formatted_row[col] = val
+                formatted_rows.append(formatted_row)
+
+            result = {
+                "rows": formatted_rows,
+                "columns": columns,
+                "meta": {
+                    "row_count": len(raw_results),
+                    "execution_time_ms": elapsed_ms,
+                    "sql": sql,
+                    "truncated": truncated,
+                    "version": "v1"
+                }
             }
 
-        columns = list(raw_results[0].keys())
-        truncated = len(raw_results) > MAX_ROWS
-        rows_to_return = raw_results[:MAX_ROWS]
+            # MANDATORY: Self-validate before returning
+            return validate_db_result(result, source="executor", trace_context=ctx)
 
-        # Format rows as dicts keyed by column name for frontend compatibility
-        formatted_rows = []
-        for row in rows_to_return:
-            formatted_row = {}
-            for col in columns:
-                val = row[col]
-                str_val = str(val) if val is not None else None
-                if str_val and len(str_val) > MAX_CELL_LENGTH:
-                    str_val = str_val[:MAX_CELL_LENGTH] + "…"
-                formatted_row[col] = str_val if str_val != "None" else None
-            formatted_rows.append(formatted_row)
+        except Exception as e:
+            logger.error({
+                "event": "executor_failure",
+                "error": str(e),
+                "sql": sql,
+                **ctx
+            })
+            return get_error_fallback(str(e), source="executor", trace_context=ctx)
 
-        logger.info(
-            f"Query executed: {len(raw_results)} rows in {elapsed_ms:.1f}ms"
-            f"{' (truncated)' if truncated else ''}"
-        )
-
-        return {
-            "columns": columns,
-            "rows": formatted_rows,
-            "row_count": len(raw_results),
-            "execution_time_ms": round(elapsed_ms, 2),
-            "truncated": truncated,
-        }

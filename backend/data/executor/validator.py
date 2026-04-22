@@ -89,5 +89,41 @@ class SQLValidator:
                     "Suspicious SQL pattern detected. Query rejected for safety."
                 )
 
-        logger.info("SQL validation passed.")
-        return True, "Query is valid."
+        logger.debug("Basic SQL safety validation passed.")
+        return True, "Query is safe."
+
+    def validate_schema(self, sql: str, schema: dict) -> Tuple[bool, str]:
+        """
+        Validate that every table and column in the SQL query exists in the schema.
+        Prevents execution of hallucinated or unauthorized references.
+        """
+        from backend.agent.utils.sql_parser import SQLParser
+        
+        entities = SQLParser.extract_entities(sql)
+        tables = entities["tables"]
+        columns = entities["columns"]
+
+        # 1. Check tables
+        for table in tables:
+            if table not in schema:
+                return False, f"Table '{table}' does not exist in the current schema."
+
+        # 2. Check columns
+        # Note: Broad check for any column existing in at least one of the referenced tables
+        all_allowed_columns = set()
+        for table in tables:
+            if table in schema:
+                table_cols = [c if isinstance(c, str) else c.get("name") 
+                             for c in schema[table].get("columns", [])]
+                all_allowed_columns.update(c.lower() for c in table_cols if c)
+
+        for col in columns:
+            # Skip common SQL functions and keywords that might be picked up as columns
+            if col.upper() in ["COUNT", "SUM", "AVG", "MIN", "MAX", "DISTINCT", "AS", "CAST", "DESC", "ASC"]:
+                continue
+            
+            if col not in all_allowed_columns:
+                return False, f"Column '{col}' does not exist in the requested tables."
+
+        logger.info(f"Schema validation passed for {len(tables)} tables and {len(columns)} columns.")
+        return True, "Schema validation passed."

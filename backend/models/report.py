@@ -11,7 +11,7 @@ class Report(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     connection_id = Column(UUID(as_uuid=True), ForeignKey("db_connections.id", ondelete="CASCADE"), nullable=False)
-    saved_query_id = Column(UUID(as_uuid=True), ForeignKey("saved_queries.id", ondelete="SET NULL"), nullable=True)
+    query_id = Column(UUID(as_uuid=True), ForeignKey("queries.id", ondelete="SET NULL"), nullable=True)
     report_name = Column(String, nullable=False)
     chart_type = Column(String, nullable=False) # bar, line, pie, table
     chart_config = Column(JSONB, nullable=False) # { x_axis: str, y_axis: str, grouping?: str }

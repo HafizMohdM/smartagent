@@ -11,12 +11,11 @@ Key changes from previous version:
 """
 
 import logging
-from typing import List
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.models.requests import ChatRequest, ChatMessageRequest
 from backend.api.models.responses import (
     ChatResponse,
     ChatSessionResponse,
@@ -24,6 +23,7 @@ from backend.api.models.responses import (
     ChatMessageItemResponse,
     ChatMessageSendResponse,
 )
+from backend.api.models.requests import ChatRequest, ChatMessageRequest, ChatSessionRenameRequest
 from backend.data.pool.session import get_db
 from backend.security.jwt_auth import get_current_user
 from backend.models.user import User
@@ -35,12 +35,23 @@ from backend.memory.summary.chat import (
     get_session_messages,
     create_message,
     touch_session,
+    update_session_name,
 )
 from backend.security.encryption import decrypt_password
+
+from backend.agent.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Chat"])
+
+def result_to_tool_result(res: Dict[str, Any]) -> ToolResult:
+    """Helper to convert a strict contract dict to a ToolResult object."""
+    return ToolResult(
+        success=True,
+        data=res,
+        metadata=res.get("meta", {})
+    )
 
 
 # ── Global chat session list ───────────────────────────────────────────────────
@@ -126,6 +137,47 @@ async def get_chat_session(
     )
 
 
+@router.patch("/chat-sessions/{session_id}")
+async def rename_chat_session(
+    session_id: str,
+    request: ChatSessionRenameRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rename an existing chat session."""
+    tenant_id = str(current_user.tenant_id)
+    user_id = str(current_user.id)
+    
+    # Verify ownership
+    session = await get_session_by_id(db, session_id, tenant_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
+        
+    success = await update_session_name(db, session_id, request.session_name)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update session name")
+        
+    return {"status": "success", "session_id": session_id, "new_name": request.session_name}
+
+
+@router.delete("/chat-sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a chat session."""
+    tenant_id = str(current_user.tenant_id)
+    user_id = str(current_user.id)
+    
+    from backend.memory.summary.chat import delete_session
+    success = await delete_session(db, session_id, tenant_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
+        
+    return {"status": "success", "session_id": session_id}
+
+
 # ── Send message ───────────────────────────────────────────────────────────────
 
 
@@ -151,33 +203,51 @@ async def send_chat_message(
     tenant_id = str(current_user.tenant_id)
     connection_id = request.connection_id
 
-    conn = None
-    plaintext_password = None
+    # ── Resolve connection IDs ─────────────────────────────────────────────────
+    # Support both single connection_id and multi connection_ids
+    raw_ids: List[str] = []
+    if request.connection_ids:
+        raw_ids = [cid.strip() for cid in request.connection_ids if cid.strip()]
+    elif connection_id:
+        raw_ids = [connection_id]
 
-    # ── DB context ─────────────────────────────────────────────────────────────
-    # Requirement: Stop auto-selecting first available connection.
-    # Validate the connection specified in the request.
-    if not connection_id:
+    if not raw_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No database connection specified."
         )
 
+    # Validate all connections belong to this tenant
     from backend.data.connector.crud import get_connection
-    conn = await get_connection(db, connection_id, tenant_id)
-    if not conn:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access to the specified database connection is denied or it does not exist."
-        )
+    validated_conns = []
+    for cid in raw_ids:
+        conn = await get_connection(db, cid, tenant_id)
+        if not conn:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied or connection not found: {cid}",
+            )
+        # Only APPROVED connections can be used in chat
+        from backend.models.db_connection import ConnectionStatus
+        if conn.status != ConnectionStatus.APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Connection '{conn.connection_name}' is not approved yet. "
+                       f"Current status: {conn.status}.",
+            )
+        validated_conns.append(conn)
+
+    # Use the first connection_id for session tracking (backward compat)
+    primary_conn = validated_conns[0]
+    connection_id = str(primary_conn.id)
 
     try:
-        plaintext_password = decrypt_password(conn.encrypted_password)
+        plaintext_password = decrypt_password(primary_conn.encrypted_password)
     except Exception as e:
         logger.error(f"Credential decryption failed for connection {connection_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to decrypt database credentials. The key may have changed.",
+            detail="Failed to decrypt database credentials.",
         )
 
     # ── Get or create session ──────────────────────────────────────────────────
@@ -194,6 +264,17 @@ async def send_chat_message(
         )
 
     session_id_str = str(session.id)
+    
+    # ── Auto-naming logic ─────────────────────────────────────────────────────
+    # If this is a new session OR the current name looks like a default "Chat - Oct 25...", 
+    # we generate a new title from the user message.
+    if not request.session_id or session.session_name.startswith("Chat - "):
+        words = request.message.split()
+        # Clean and pick first 7 words
+        clean_words = [w.strip('?!.,').capitalize() for w in words if len(w) > 1][:7]
+        if clean_words:
+            new_title = " ".join(clean_words)
+            await update_session_name(db, session_id_str, new_title)
 
     # ── Store user message ─────────────────────────────────────────────────────
     user_msg = await create_message(
@@ -218,16 +299,38 @@ async def send_chat_message(
 
         runtime_session_id = await session_mgr.create_session(user_id)
 
-        db_connected = False
-        if conn and plaintext_password:
-            # Connect the DB tool only when a connection is selected
+        # ── Multi-DB path ──────────────────────────────────────────────────────
+        if len(validated_conns) > 1:
+            from backend.agent.multi_db_orchestrator import MultiDBQueryOrchestrator
+            multi_orch = MultiDBQueryOrchestrator()
+            try:
+                multi_result = await multi_orch.run(
+                    query=request.message,
+                    connections=validated_conns,
+                    history=history,
+                )
+            finally:
+                await session_mgr.delete_session(runtime_session_id)
+
+            result = {
+                "response":     multi_result.get("meta", {}).get("summary") or "Multi-database query completed.",
+                "sql":          None,
+                "results":      multi_result,  # This is the strict contract dict
+                "tool_used":    "multi_db_query",
+                "plan":         {},
+                "tool_result":  result_to_tool_result(multi_result),
+            }
+
+        else:
+            # ── Single-DB path (existing behaviour, unchanged) ─────────────────
+            db_connected = False
             try:
                 await db_tool.connect(
                     session_id=runtime_session_id,
-                    host=conn.host,
-                    port=conn.port,
-                    database=conn.database_name,
-                    username=conn.username,
+                    host=primary_conn.host,
+                    port=primary_conn.port,
+                    database=primary_conn.database_name,
+                    username=primary_conn.username,
                     password=plaintext_password,
                     connection_id=connection_id,
                 )
@@ -239,16 +342,16 @@ async def send_chat_message(
                     detail=f"Failed to connect to the database: {str(e)}",
                 )
 
-        try:
-            result = await orchestrator.run(
-                query=request.message,
-                session_id=runtime_session_id,
-                history=history,
-            )
-        finally:
-            if db_connected:
-                await db_tool.disconnect(runtime_session_id)
-            await session_mgr.delete_session(runtime_session_id)
+            try:
+                result = await orchestrator.run(
+                    query=request.message,
+                    session_id=runtime_session_id,
+                    history=history,
+                )
+            finally:
+                if db_connected:
+                    await db_tool.disconnect(runtime_session_id)
+                await session_mgr.delete_session(runtime_session_id)
 
     except Exception as e:
         logger.error(f"Agent execution failed: {e}", exc_info=True)
@@ -260,13 +363,20 @@ async def send_chat_message(
         )
 
     # ── Store agent response ───────────────────────────────────────────────────
+    # The snapshot must be a strict SQLDataContract dict
+    snapshot = None
+    if result.get("results"):
+        snapshot = result["results"]
+    elif result.get("tool_result") and hasattr(result["tool_result"], "data"):
+        snapshot = result["tool_result"].data
+
     agent_msg = await create_message(
         db=db,
         session_id=session_id_str,
         role="agent",
         message_text=result.get("response", ""),
         generated_sql=result.get("sql"),
-        query_result_snapshot=result.get("tool_result"),
+        query_result_snapshot=snapshot,
     )
 
     await touch_session(db, session_id_str)
@@ -318,7 +428,7 @@ async def chat(request: ChatRequest, req: Request):
             response=result["response"],
             summary=result.get("summary"),
             sql=result.get("sql"),
-            preview_rows=result.get("preview_rows"),
+            results=result.get("tool_result").data if result.get("tool_result") and hasattr(result.get("tool_result"), "data") else None,
             chart=result.get("chart"),
             tool_used=result.get("tool_used"),
             metadata={**result.get("metadata", {}), "plan": result.get("plan", {})},

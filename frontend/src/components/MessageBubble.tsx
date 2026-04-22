@@ -11,15 +11,20 @@ export default function MessageBubble({ message, onSave }: { message: Message, o
 
     // Use SQL from message root or metadata fallback
     const effectiveSql = message.sql || message.metadata?.generated_sql || message.metadata?.sql;
-    const canSave = !isUser && (!!effectiveSql || !!message.chart || !!message.tool_used);
-    
+    const isMultiDb = !!message.multiDb || message.tool_used === 'multi_db_query';
+    const canSave = !isUser && (!!effectiveSql || !!message.chart || message.tool_used === 'database_query' || isMultiDb);
+
     // Extract table data if available
     const tableData = message.metadata?.data;
     const hasTable = !isUser && tableData && Array.isArray(tableData.rows) && tableData.rows.length > 0;
 
     return (
         <div className={`bubble ${isUser ? 'bubble-user' : 'bubble-assistant'}`}>
-            {!isUser && <div className="bubble-avatar">AI</div>}
+            {!isUser && (
+                <div className="bubble-avatar">
+                    <span style={{ fontSize: '1.1rem' }}>✨</span>
+                </div>
+            )}
             <div className="bubble-body">
                 <div className="bubble-content">
                     {displayContent.split('\n').map((line, i, arr) => (
@@ -81,10 +86,10 @@ export default function MessageBubble({ message, onSave }: { message: Message, o
                         <span className="metadata-badge">📊 {message.metadata.row_count} rows</span>
                     )}
                     <span className="bubble-time">{time}</span>
-                    
+
                     {canSave && onSave && (
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onSave(message); }} 
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onSave(message); }}
                             className="btn-save-query active"
                             title="Save this query to your library"
                         >
@@ -93,7 +98,11 @@ export default function MessageBubble({ message, onSave }: { message: Message, o
                     )}
                 </div>
             </div>
-            {isUser && <div className="bubble-avatar user-avatar">You</div>}
+            {isUser && (
+                <div className="bubble-avatar user-avatar">
+                    <span style={{ fontSize: '1rem' }}>👤</span>
+                </div>
+            )}
         </div>
     );
 }

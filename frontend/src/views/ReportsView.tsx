@@ -108,7 +108,7 @@ const ReportsView: React.FC = () => {
                     {r.report_name}
                   </td>
                   <td><span className="type-badge">{r.chart_type}</span></td>
-                  <td className="source-query-cell">{r.saved_query_id}</td>
+                  <td className="source-query-cell">{r.query_id}</td>
                   <td className="date-cell">{new Date(r.created_at).toLocaleDateString()}</td>
                   <td className="actions-cell">
                     <button className="btn-delete-sm" onClick={() => handleDelete(r.id)}>Delete</button>

@@ -11,32 +11,55 @@ from typing import List
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.api.models.requests import SavedQueryCreateRequest, SavedQueryUpdateRequest
-from backend.api.models.responses import SavedQueryResponse, StatusResponse
+from backend.api.models.requests import SavedQueryCreateRequest, SavedQueryUpdateRequest, ExecuteQueryRequest
+from backend.api.models.responses import SavedQueryResponse, StatusResponse, SQLDataContract
 from backend.data.pool.session import get_db
 from backend.security.jwt_auth import get_current_user
 from backend.api.middleware.rbac import is_admin
 from backend.models.user import User
-from backend.data.executor.crud import save_query, list_saved_queries, delete_query, update_query
+from backend.data.executor.crud import save_query, list_saved_queries, delete_query, update_query, get_query
 from backend.agent.utils.sql_parser import SQLParser
+from backend.data.executor.orchestrator import run_parallel_sql
+from backend.data.executor.generator import SQLGenerator
 
-router = APIRouter(prefix="/api/queries", tags=["Saved Queries"])
+router = APIRouter(prefix="/api", tags=["Saved Queries"])
 
 
-@router.post("", response_model=SavedQueryResponse)
+@router.post("/queries", response_model=SavedQueryResponse)
 async def create_saved_query(
     request: SavedQueryCreateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Save an executed query."""
+    """Save an executed query with multi-DB connection mapping."""
     if not request.title or not request.title.strip():
         raise HTTPException(status_code=400, detail="Title cannot be empty")
 
     from backend.data.connector.crud import get_connection
-    conn = await get_connection(db, request.connection_id, str(current_user.tenant_id))
+    
+    # Resolve connection mapping
+    target_conn_ids = []
+    
+    # 1. From snapshot if multi-db
+    multi_db = request.query_result_snapshot.get("multi_db") if isinstance(request.query_result_snapshot, dict) else None
+    if multi_db and "results" in multi_db:
+        # In multi-db, we can't always trust the request.connection_id to be set
+        # We might have a list of connections in the snapshot
+        for res in multi_db.get("results", []):
+            cid = res.get("connection_id")
+            if cid: target_conn_ids.append(str(cid))
+    
+    # 2. Add explicit connection_id if provided and not already in list
+    if request.connection_id and str(request.connection_id) not in target_conn_ids:
+        target_conn_ids.append(str(request.connection_id))
+
+    if not target_conn_ids:
+         raise HTTPException(status_code=400, detail="No database connections associated with this query")
+
+    # Validate at least one exists
+    conn = await get_connection(db, target_conn_ids[0], str(current_user.tenant_id))
     if not conn:
-        raise HTTPException(status_code=404, detail="Database connection not found")
+        raise HTTPException(status_code=404, detail="Primary database connection not found")
 
     try:
         saved_query_obj = await save_query(
@@ -44,7 +67,7 @@ async def create_saved_query(
             user_id=str(current_user.id),
             username=current_user.name or current_user.email,
             tenant_id=str(current_user.tenant_id),
-            connection_id=request.connection_id,
+            connection_id=target_conn_ids[0],
             database_name=conn.database_name,
             title=request.title,
             natural_language_query=request.natural_language_query,
@@ -52,17 +75,19 @@ async def create_saved_query(
             query_result_snapshot=request.query_result_snapshot,
             execution_time_ms=request.execution_time_ms,
             row_count=request.row_count,
+            connection_ids=target_conn_ids
         )
         return saved_query_obj
     except ValueError as e:
         logger.warning(f"Failed to save query: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No valid SQL found in response"
+            detail=str(e)
         )
 
 
-@router.get("", response_model=List[SavedQueryResponse])
+
+@router.get("/queries", response_model=List[SavedQueryResponse])
 async def get_user_saved_queries(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -77,7 +102,7 @@ async def get_user_saved_queries(
     return queries
 
 
-@router.delete("/{query_id}", response_model=StatusResponse)
+@router.delete("/queries/{query_id}", response_model=StatusResponse)
 async def remove_saved_query(
     query_id: str,
     db: AsyncSession = Depends(get_db),
@@ -98,7 +123,7 @@ async def remove_saved_query(
         )
     return StatusResponse(status="success", message="Query deleted successfully")
 
-@router.patch("/{query_id}", response_model=SavedQueryResponse)
+@router.patch("/queries/{query_id}", response_model=SavedQueryResponse)
 async def update_saved_query(
     query_id: str,
     request: SavedQueryUpdateRequest,
@@ -119,88 +144,114 @@ async def update_saved_query(
         )
     return updated
 
-@router.get("/{query_id}/preview", response_model=SavedQueryResponse)
+
+@router.get("/queries/{query_id}/preview", response_model=SavedQueryResponse)
 async def preview_saved_query(
     query_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Execute a saved query with LIMIT 100 for a fresh preview/schema extraction."""
-    from sqlalchemy.future import select
-    from backend.models.saved_query import SavedQuery
-    from backend.models.db_connection import DBConnection
-    from backend.data.executor import executor
-    from backend.data.connector.connector import DatabaseConnector
-    from backend.security.encryption import decrypt_password
-
-    # 1. Fetch query (with tenant/user isolation)
-    stmt = select(SavedQuery).where(
-        SavedQuery.id == query_id,
-        SavedQuery.tenant_id == str(current_user.tenant_id)
-    )
-    if not is_admin(current_user):
-        stmt = stmt.where(SavedQuery.user_id == str(current_user.id))
-        
-    result = await db.execute(stmt)
-    query = result.scalar_one_or_none()
-    if not query:
+    """
+    Legacy execution route. Calls standardized execution logic.
+    """
+    q = await get_query(db, query_id, str(current_user.id))
+    if not q:
         raise HTTPException(status_code=404, detail="Saved query not found")
+    
+    # Standardized execution
+    from backend.models.db_connection import DBConnection
+    execution_result = await run_parallel_sql(
+        connections=q.connections,
+        sql=q.generated_sql,
+        trace_context={"request_id": f"preview_{q.id}"}
+    )
+    
+    q.results = [execution_result]
+    q.failed_sources = execution_result.get("failed_sources", [])
+    q.execution_stats = {
+        "time_ms": execution_result.get("execution_time_ms"),
+        "total_rows": execution_result.get("row_count")
+    }
+        
+    response = SavedQueryResponse.from_orm(q)
+    response.results = getattr(q, "results", [])
+    response.failed_sources = getattr(q, "failed_sources", [])
+    response.execution_stats = getattr(q, "execution_stats", None)
+    
+    return response
 
-    # 2. Fetch connection
-    conn_result = await db.execute(select(DBConnection).where(DBConnection.id == query.connection_id))
-    conn = conn_result.scalar_one_or_none()
-    if not conn:
-        raise HTTPException(status_code=404, detail="Database connection not found")
 
-    # 3. Decrypt and Execute
+@router.get("/queries/{query_id}", response_model=SavedQueryResponse)
+@router.get("/saved-query/{query_id}", response_model=SavedQueryResponse)
+async def get_saved_query_detail(
+    query_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fetch Saved Query metadata.
+    Requirement #4: Response MUST include id, title, generated_sql, connection_ids
+    """
+    q = await get_query(db, query_id, str(current_user.id))
+    if not q:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    
+    if not q.generated_sql:
+        raise HTTPException(status_code=500, detail="Data corruption: generated_sql is missing for this query")
+
+    return SavedQueryResponse.from_orm(q)
+
+
+@router.post("/queries/execute", response_model=SQLDataContract)
+@router.post("/execute-query", response_model=SQLDataContract)
+async def execute_query_api(
+    request: ExecuteQueryRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Standardized execution API.
+    Requirement #6: Request { sql, connection_ids } -> Response { rows, columns, meta }
+    Requirement #9: Logging { query_id, sql, execution_status, execution_time }
+    """
+    from backend.data.connector.crud import get_connection
+    from backend.models.db_connection import ConnectionStatus
+    
+    # 1. Resolve & Validate Connections
+    validated_conns = []
+    for cid in request.connection_ids:
+        conn = await get_connection(db, cid, str(current_user.tenant_id))
+        if not conn:
+            raise HTTPException(status_code=404, detail=f"Connection {cid} not found")
+        if conn.status != ConnectionStatus.APPROVED:
+            raise HTTPException(status_code=403, detail=f"Connection {conn.connection_name} is not approved")
+        validated_conns.append(conn)
+
+    # 2. Execute
     try:
-        pw = decrypt_password(conn.encrypted_password)
-        
-        # Requirement 1: SQL Extraction and Validation
-        pure_sql = SQLParser.extract_sql(query.query) or query.query.strip()
-        if not pure_sql or not SQLParser.is_valid_query(pure_sql):
-            logger.error(f"Invalid query attempted for preview: {pure_sql}")
-            raise HTTPException(status_code=400, detail="Invalid query. Please select a valid saved query.")
-
-        connector = DatabaseConnector()
-        await connector.connect(
-            host=conn.host, port=conn.port, database=conn.database_name,
-            username=conn.username, password=pw,
-            connection_id=str(conn.id)
+        result_dict = await run_parallel_sql(
+            connections=validated_conns,
+            sql=request.sql,
+            trace_context={"user_id": str(current_user.id)}
         )
         
-        # Requirement 2: Safe Execution with subquery wrap
-        # Strip trailing semicolons from the inner query
-        inner_sql = pure_sql.rstrip(';').strip()
-        sql_with_limit = f"SELECT * FROM ({inner_sql}) AS subquery_preview LIMIT 100"
-        
-        logger.info(f"Executing preview SQL: {sql_with_limit}")
-        
-        sql_executor = executor.SQLExecutor(connector)
-        exec_result = await sql_executor.execute(sql_with_limit)
-        
-        # Return as a SavedQueryResponse (reusing the model for columns/rows)
-        return SavedQueryResponse(
-            id=query.id,
-            connection_id=query.connection_id,
-            tenant_id=query.tenant_id,
-            database_name=query.database_name,
-            username=query.username,
-            title=query.title,
-            natural_language_query=query.natural_language_query,
-            query=query.query,
-            query_result_snapshot=exec_result, # Fresh snapshot
-            execution_time_ms=int(exec_result.get("execution_time_ms", 0)),
-            row_count=exec_result["row_count"],
-            created_at=query.created_at
+        # 3. Logging (Requirement #9)
+        logger.info(
+            f"[EXECUTION] query_id=raw, sql={request.sql[:100]}..., "
+            f"status=success, time={result_dict.get('execution_time_ms')}ms"
         )
-
-    except HTTPException:
-        raise
+        
+        # 4. Format into strict SQLDataContract
+        res_meta = result_dict.get("meta", {})
+        return SQLDataContract(
+            rows=result_dict.get("rows", []),
+            columns=result_dict.get("columns", []),
+            meta={
+                "row_count": res_meta.get("row_count", 0),
+                "execution_time_ms": res_meta.get("execution_time_ms", 0),
+                "version": "v1"
+            }
+        )
     except Exception as e:
-        logger.error(f"Failed to execute preview query: {e}", exc_info=True)
-        # Requirement 3: Clean error message
-        raise HTTPException(status_code=400, detail="Failed to execute query. Please verify query format.")
-    finally:
-        if 'connector' in locals():
-            await connector.disconnect()
+        logger.error(f"[EXECUTION] query_id=raw, status=failed, error={str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database execution failed: {str(e)}")

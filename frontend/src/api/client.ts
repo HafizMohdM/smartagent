@@ -17,7 +17,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  // 60-second timeout on every request to allow complex AI agent reflection loops
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { ...options, headers, signal: controller.signal });
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err?.name === 'AbortError') {
+      throw new Error('Request timed out. Is the backend server running?');
+    }
+    throw new Error('Cannot connect to server. Please make sure the backend is running on port 8000.');
+  }
+  clearTimeout(timer);
 
   if (!res.ok) {
     if (res.status === 401) {
@@ -40,6 +54,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 // ── Auth ──────────────────────────────────────────────────────────
 
 export interface LoginResponse {
+  success?: boolean;
+  token?: string;
   access_token: string;
   session_id: string;
   role: string;
@@ -51,6 +67,7 @@ export interface RegisterRequest {
   email: string;
   phone_number?: string;
   password: string;
+  role?: 'user' | 'manager';
 }
 
 export interface UserProfile {
@@ -58,6 +75,7 @@ export interface UserProfile {
   email: string;
   name: string | null;
   role: string;
+  status: string;
   is_active: boolean;
   created_at: string;
 }
@@ -81,7 +99,11 @@ export async function login(emailOrUsername: string, password: string): Promise<
 }
 
 export async function logout(): Promise<void> {
-  await request('/api/auth/logout', { method: 'POST' });
+  try {
+    await request('/api/auth/logout', { method: 'POST' });
+  } catch {
+    // Ignore logout errors — always clear local state
+  }
 }
 
 export async function getMe(): Promise<UserProfile> {
@@ -114,10 +136,15 @@ export async function connectDatabase(payload: DatabaseConnectionRequest): Promi
 // ── Chat ──────────────────────────────────────────────────────────
 
 export interface ChartConfig {
-  type: 'line' | 'bar' | 'pie' | 'table';
-  chart_type?: 'line' | 'bar' | 'pie';
+  type: 'line' | 'bar' | 'pie' | 'table' | 'area' | 'stacked_bar' | 'horizontal_bar' |
+        'combo' | 'histogram' | 'scatter' | 'bubble' | 'heatmap' | 'treemap' |
+        'kpi_card' | 'gauge' | 'box_plot';
+  chart_type?: string;
   x_axis?: string;
   y_axis?: string;
+  stack_col?: string;
+  value_col?: string;
+  kpi_value?: number;
   data: any[];
 }
 
@@ -187,6 +214,25 @@ export interface ChatMessageSendResponse {
   metadata: { plan?: any; session_id?: string; [key: string]: any };
 }
 
+export interface MultiDBResult {
+  database: string;
+  connection_id: string;
+  data: any[];
+  columns: string[];
+  sql: string | null;
+  error: string | null;
+  row_count: number;
+  execution_ms: number;
+}
+
+export interface MultiDBPayload {
+  results: MultiDBResult[];
+  merged: boolean;
+  merged_rows?: any[];
+  merged_columns?: string[];
+  summary: string;
+}
+
 /** List all chat sessions for the current user, optionally filtered by connectionId. */
 export async function getChatSessions(connectionId?: string): Promise<ChatSessionMetaResponse[]> {
   const url = connectionId ? `/api/chat-sessions?connection_id=${connectionId}` : '/api/chat-sessions';
@@ -197,6 +243,19 @@ export async function getChatSession(session_id: string): Promise<ChatSessionDet
   return request<ChatSessionDetailsResponse>(`/api/chat-sessions/${session_id}`);
 }
 
+export async function renameChatSession(sessionId: string, newName: string): Promise<any> {
+  return request(`/api/chat-sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ session_name: newName }),
+  });
+}
+
+export async function deleteChatSession(sessionId: string): Promise<any> {
+  return request(`/api/chat-sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
 /**
  * Send a chat message.
  * connection_id is REQUIRED for database queries.
@@ -205,12 +264,14 @@ export async function sendDbChatMessage(
   message: string,
   connection_id: string,
   session_id?: string | null,
+  connection_ids?: string[],
 ): Promise<ChatMessageSendResponse> {
   return request<ChatMessageSendResponse>('/api/chat-message', {
     method: 'POST',
     body: JSON.stringify({
       message,
       connection_id,
+      connection_ids: connection_ids && connection_ids.length > 1 ? connection_ids : undefined,
       session_id: session_id ?? undefined,
     }),
   });
@@ -227,6 +288,9 @@ export interface DBConnectionItem {
   database_name: string;
   username: string;
   ssl_enabled: boolean;
+  status: 'pending' | 'approved' | 'rejected';
+  is_admin_owned: boolean;
+  created_by: string | null;
   created_at: string;
 }
 
@@ -254,21 +318,65 @@ export async function deleteConnection(id: string): Promise<void> {
   await request(`/api/connections/${id}`, { method: 'DELETE' });
 }
 
+export async function updateConnection(id: string, data: {
+  connection_name?: string;
+  host?: string;
+  port?: number;
+  database_name?: string;
+  username?: string;
+  password?: string;
+  ssl_enabled?: boolean;
+}): Promise<DBConnectionItem> {
+  return request<DBConnectionItem>(`/api/connections/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getPendingConnections(): Promise<DBConnectionItem[]> {
+  return request<DBConnectionItem[]>('/api/connections/pending');
+}
+
+export async function approveConnection(id: string): Promise<DBConnectionItem> {
+  return request<DBConnectionItem>(`/api/connections/${id}/approve`, { method: 'POST' });
+}
+
+export async function rejectConnection(id: string): Promise<DBConnectionItem> {
+  return request<DBConnectionItem>(`/api/connections/${id}/reject`, { method: 'POST' });
+}
+
 // ── Saved Queries ────────────────────────────────────────────────
 
-export interface SavedQueryItem {
+export interface QueryExecutionItem {
   id: string;
-  connection_id: string;
-  tenant_id: string;
+  query_id: string;
   database_name: string;
-  username: string;
-  title: string;
-  natural_language_query: string;
-  query: string;
-  query_result_snapshot: any | null;
+  sql: string | null;
+  status: string;
+  result_json: any | null;
+  error: string | null;
   execution_time_ms: number | null;
   row_count: number | null;
   created_at: string;
+}
+
+export interface SavedQueryItem {
+  id: string;
+  tenant_id: string;
+  username: string;
+  title: string;
+  query_text: string;
+  generated_sql?: string;
+  created_at: string;
+  executions: QueryExecutionItem[];
+  
+  // NEW Dynamic Execution Fields
+  results: any[] | null;
+  failed_sources?: { id: string; database_name?: string; error: string }[];
+  execution_stats?: {
+    time_ms: number;
+    total_rows: number;
+  };
 }
 
 export async function getSavedQueries(): Promise<SavedQueryItem[]> {
@@ -283,16 +391,14 @@ export async function getSavedQueryPreview(id: string): Promise<SavedQueryItem> 
   return request<SavedQueryItem>(`/api/queries/${id}/preview`);
 }
 
+/** Fetch Saved Query metadata only. */
 export async function getSavedQuery(id: string): Promise<SavedQueryItem> {
-  // Alias or direct fetch if we don't want to execute. 
-  // However, since the requirements say "execute on load", we keep using preview for now 
-  // or add a simple getter. Let's add a proper preview/execution one.
-  return request<SavedQueryItem>(`/api/queries/${id}/preview`);
+  return request<SavedQueryItem>(`/api/queries/${id}`);
 }
 
 export interface SavedQueryUpdateRequest {
   title?: string;
-  query?: string;
+  query_text?: string;
 }
 
 export async function updateSavedQuery(id: string, data: SavedQueryUpdateRequest): Promise<SavedQueryItem> {
@@ -304,6 +410,7 @@ export async function updateSavedQuery(id: string, data: SavedQueryUpdateRequest
 
 export interface SavedQueryCreateRequest {
   connection_id: string;
+  connection_ids?: string[];
   title: string;
   natural_language_query: string;
   query: string;
@@ -318,18 +425,40 @@ export async function createSavedQuery(data: SavedQueryCreateRequest): Promise<S
     body: JSON.stringify(data),
   });
 }
+
+export interface SQLDataContract {
+  rows: any[];
+  columns: string[];
+  meta: {
+    row_count: number;
+    execution_time_ms: number;
+  };
+}
+
+/** 
+ * Standardized execution API.
+ * Requirement #6: Request { sql, connection_ids }
+ */
+export async function executeQuery(sql: string, connectionIds: string[]): Promise<SQLDataContract> {
+  return request<SQLDataContract>('/api/queries/execute', {
+    method: 'POST',
+    body: JSON.stringify({ sql, connection_ids: connectionIds }),
+  });
+}
 // ── Reports ───────────────────────────────────────────────────────
 
 export interface ReportItem {
   id: string;
   report_name: string;
-  chart_type: 'bar' | 'line' | 'pie' | 'table';
+  chart_type: string;
   chart_config: {
     x_axis: string;
     y_axis: string;
+    stack_col?: string;
+    value_col?: string;
     grouping?: string;
   };
-  saved_query_id: string;
+  query_id: string;
   connection_id: string;
   user_id: string;
   tenant_id: string;
@@ -338,12 +467,13 @@ export interface ReportItem {
 
 export interface ReportDataResponse {
   report_id: string;
-  data: any[];
+  results: SQLDataContract;
   chart_type: string;
   chart_config: any;
-  row_count: number;
-  execution_time_ms: number;
+  cache_status?: string;
+  request_id?: string;
 }
+
 
 export async function getReports(): Promise<ReportItem[]> {
   return request<ReportItem[]>('/api/reports');
@@ -353,8 +483,8 @@ export async function createReport(data: {
   report_name: string;
   chart_type: string;
   chart_config: any;
-  saved_query_id: string;
-  connection_id: string;
+  query_id: string;
+  connection_id?: string;
 }): Promise<ReportItem> {
   return request<ReportItem>('/api/reports', {
     method: 'POST',
@@ -366,8 +496,8 @@ export async function deleteReport(id: string): Promise<void> {
   await request(`/api/reports/${id}`, { method: 'DELETE' });
 }
 
-export async function getReportData(id: string): Promise<ReportDataResponse> {
-  return request<ReportDataResponse>(`/api/reports/${id}/data`);
+export async function getReportData(id: string, limit: number = 1000, offset: number = 0): Promise<ReportDataResponse> {
+  return request<ReportDataResponse>(`/api/reports/${id}/data?limit=${limit}&offset=${offset}`);
 }
 
 export interface SystemStatistics {
@@ -378,4 +508,137 @@ export interface SystemStatistics {
 
 export async function getSystemStatistics(): Promise<SystemStatistics> {
   return request<SystemStatistics>('/api/reports/statistics');
+}
+
+// ── Admin Approvals ───────────────────────────────────────────────
+
+export interface PendingUser {
+  id: string;
+  name: string | null;
+  email: string;
+  role: string;
+  status: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export async function getPendingUsers(): Promise<PendingUser[]> {
+  return request<PendingUser[]>('/api/admin/users/pending');
+}
+
+export async function approveUser(id: string): Promise<PendingUser> {
+  return request<PendingUser>(`/api/admin/users/${id}/approve`, { method: 'POST' });
+}
+
+export async function rejectUser(id: string): Promise<PendingUser> {
+  return request<PendingUser>(`/api/admin/users/${id}/reject`, { method: 'POST' });
+}
+
+export async function getAdminPendingConnections(): Promise<DBConnectionItem[]> {
+  return request<DBConnectionItem[]>('/api/admin/connections/pending');
+}
+
+export async function adminApproveConnection(id: string): Promise<DBConnectionItem> {
+  return request<DBConnectionItem>(`/api/admin/connections/${id}/approve`, { method: 'POST' });
+}
+
+export async function adminRejectConnection(id: string): Promise<DBConnectionItem> {
+  return request<DBConnectionItem>(`/api/admin/connections/${id}/reject`, { method: 'POST' });
+}
+
+// ── Dashboard Builder ─────────────────────────────────────────────
+
+export interface DashboardItem {
+  id: string;
+  user_id: string;
+  tenant_id: string;
+  connection_id: string | null;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WidgetItem {
+  id: string;
+  dashboard_id: string;
+  query_id: string | null;
+  title: string;
+  chart_type: string;
+  config: { x_axis?: string; y_axis?: string; value_col?: string; [k: string]: any };
+  grid_x: number;
+  grid_y: number;
+  grid_w: number;
+  grid_h: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DashboardDetail extends DashboardItem {
+  widgets: WidgetItem[];
+}
+
+export interface WidgetCreateRequest {
+  dashboard_id: string;
+  query_id?: string;
+  title: string;
+  chart_type: string;
+  config: { x_axis?: string; y_axis?: string; value_col?: string };
+  grid_x: number;
+  grid_y: number;
+  grid_w: number;
+  grid_h: number;
+}
+
+export interface LayoutItem {
+  id: string;
+  grid_x: number;
+  grid_y: number;
+  grid_w: number;
+  grid_h: number;
+}
+
+export async function getDashboards(): Promise<DashboardItem[]> {
+  return request<DashboardItem[]>('/api/dashboards');
+}
+
+export async function createDashboard(data: { name: string; connection_id?: string }): Promise<DashboardItem> {
+  return request<DashboardItem>('/api/dashboards', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function getDashboard(id: string): Promise<DashboardDetail> {
+  return request<DashboardDetail>(`/api/dashboards/${id}`);
+}
+
+export async function updateDashboard(id: string, data: { name?: string; connection_id?: string }): Promise<DashboardItem> {
+  return request<DashboardItem>(`/api/dashboards/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+}
+
+export async function deleteDashboard(id: string): Promise<void> {
+  await request(`/api/dashboards/${id}`, { method: 'DELETE' });
+}
+
+export async function addWidget(data: WidgetCreateRequest): Promise<WidgetItem> {
+  return request<WidgetItem>(`/api/dashboards/${data.dashboard_id}/widgets`, {
+    method: 'POST', body: JSON.stringify(data),
+  });
+}
+
+export async function updateWidget(dashboardId: string, widgetId: string, data: Partial<WidgetItem>): Promise<WidgetItem> {
+  return request<WidgetItem>(`/api/dashboards/${dashboardId}/widgets/${widgetId}`, {
+    method: 'PUT', body: JSON.stringify(data),
+  });
+}
+
+export async function deleteWidget(dashboardId: string, widgetId: string): Promise<void> {
+  await request(`/api/dashboards/${dashboardId}/widgets/${widgetId}`, { method: 'DELETE' });
+}
+
+export async function saveLayout(dashboardId: string, layout: LayoutItem[]): Promise<void> {
+  await request(`/api/dashboards/${dashboardId}/layout`, {
+    method: 'POST', body: JSON.stringify({ layout }),
+  });
+}
+
+export async function getWidgetData(dashboardId: string, widgetId: string, limit: number = 1000, offset: number = 0): Promise<ReportDataResponse> {
+  return request<ReportDataResponse>(`/api/dashboards/${dashboardId}/widgets/${widgetId}/data?limit=${limit}&offset=${offset}`);
 }

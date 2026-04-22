@@ -2,8 +2,8 @@
 Pydantic request models for all API endpoints.
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional, Any
+from pydantic import BaseModel, Field, validator
+from typing import Optional, Any, List
 
 
 # ── Authentication ──────────────────────────────────────────────────
@@ -19,6 +19,7 @@ class UserRegisterRequest(BaseModel):
     email: str = Field(..., min_length=1, description="Email address")
     phone_number: Optional[str] = Field(default=None, description="Phone number")
     password: str = Field(..., min_length=6, description="Password")
+    role: Optional[str] = Field(default="user", description="Role: 'user' or 'manager'")
 
 # ── Service Connection ──────────────────────────────────────────────
 
@@ -42,6 +43,15 @@ class ConnectionCreateRequest(BaseModel):
     ssl_enabled: bool = Field(default=False, description="Use SSL for connection")
     extra_params: Optional[dict] = Field(default=None, description="Additional connection params")
 
+class ConnectionUpdateRequest(BaseModel):
+    """Payload to update an existing database connection."""
+    connection_name: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    database_name: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    ssl_enabled: Optional[bool] = None
 class ServiceConnectionRequest(BaseModel):
     """Generic wrapper for connecting to any service."""
     service_type: str = Field(..., description="Type of service (e.g., 'database')")
@@ -58,7 +68,8 @@ class ChatRequest(BaseModel):
 
 class ChatMessageRequest(BaseModel):
     """Send a chat message within a persistent session (connection is optional)."""
-    connection_id: Optional[str] = Field(default=None, description="Database connection ID (optional)")
+    connection_id: Optional[str] = Field(default=None, description="Single database connection ID")
+    connection_ids: Optional[List[str]] = Field(default=None, description="Multiple connection IDs for multi-DB queries")
     session_id: Optional[str] = Field(default=None, description="Active session ID, if continuing a thread")
     message: str = Field(..., min_length=1, description="User message / query")
 
@@ -69,10 +80,22 @@ class SavedQueryCreateRequest(BaseModel):
     connection_id: str = Field(..., description="Connection ID used")
     title: str = Field(..., description="Friendly name for the saved query")
     natural_language_query: str = Field(..., description="Original user question")
-    query: str = Field(..., description="The generated SQL")
+    query: str = Field(..., min_length=1, description="The generated SQL")
+
+    @validator("query")
+    def query_not_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("SQL definition cannot be empty or just whitespace")
+        return v.strip()
     query_result_snapshot: Optional[Any] = Field(default=None, description="JSON snapshot of query results")
     execution_time_ms: Optional[int] = Field(default=None, description="Execution time in milliseconds")
     row_count: Optional[int] = Field(default=None, description="Number of rows returned")
+
+
+class ExecuteQueryRequest(BaseModel):
+    """Payload to execute an arbitrary SQL query."""
+    sql: str = Field(..., min_length=1, description="The SQL query to execute")
+    connection_ids: List[str] = Field(..., min_length=1, description="List of connection IDs to run against")
 
 
 class SavedQueryUpdateRequest(BaseModel):
@@ -86,3 +109,8 @@ class SavedQueryUpdateRequest(BaseModel):
 class CreateSessionRequest(BaseModel):
     """Request to create a new session."""
     user_id: Optional[str] = Field(default=None, description="User identifier")
+
+
+class ChatSessionRenameRequest(BaseModel):
+    """Request to rename a chat session."""
+    session_name: str = Field(..., min_length=1, description="New name for the session")

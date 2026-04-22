@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config.settings import settings
 from backend.api.middleware.auth import AuthMiddleware
-from backend.api.routes import auth, services, chat, health, connections, queries, reports
+from backend.api.routes import auth, services, chat, health, connections, queries, reports, dashboards, admin
 from backend.memory.session.manager import SessionManager
 from backend.agent.orchestrator import AgentOrchestrator
 from backend.agent.tools.registry import ToolRegistry
@@ -119,10 +119,12 @@ async def lifespan(app: FastAPI):
                     name="Admin (legacy)", tenant_id=tenant_id, role="admin",
                 )
                 logger.info("✓ Legacy admin seeded (admin@example.com / admin123)")
+            else:
+                logger.info("✓ Legacy admin already exists")
 
             from backend.security.hashing import verify_password
 
-            # Seed admin@admin.local (shorthand: admin / admin123)
+            # Seed admin@admin.local — always approved + active
             existing_admin = await get_user_by_email(db, "admin@admin.local")
             admin_pwd = "admin123"
             if not existing_admin:
@@ -130,31 +132,32 @@ async def lifespan(app: FastAPI):
                 await create_user(
                     db, email="admin@admin.local", password_hash=hashed_admin,
                     name="Admin", tenant_id=tenant_id, role="admin",
+                    status="approved", is_active=True,
                 )
                 logger.info("✓ Admin user seeded (admin@admin.local / admin123)")
-            elif not verify_password(admin_pwd, existing_admin.password_hash) or existing_admin.role != "admin":
-                # Only re-hash and update if the password/role is actually different
-                existing_admin.password_hash = hash_password(admin_pwd)
-                existing_admin.role = "admin"
-                await db.commit()
-                logger.info("✓ Admin user password/role synchronised")
+            else:
+                # Ensure admin is always approved/active regardless of DB state
+                if existing_admin.status != "approved" or not existing_admin.is_active or existing_admin.role != "admin":
+                    existing_admin.status = "approved"
+                    existing_admin.is_active = True
+                    existing_admin.role = "admin"
+                    await db.commit()
+                    logger.info("✓ Admin user status synchronised")
+                else:
+                    logger.info("✓ Admin user already exists and is up-to-date")
 
-            # Seed user@user.local (shorthand: user / user123)
-            existing_user = await get_user_by_email(db, "user@user.local")
-            user_pwd = "user123"
-            if not existing_user:
-                hashed_user = hash_password(user_pwd)
-                await create_user(
-                    db, email="user@user.local", password_hash=hashed_user,
-                    name="User", tenant_id=tenant_id, role="user",
-                )
-                logger.info("✓ Regular user seeded (user@user.local / user123)")
-            elif not verify_password(user_pwd, existing_user.password_hash) or existing_user.role != "user":
-                # Only re-hash and update if the password/role is actually different
-                existing_user.password_hash = hash_password(user_pwd)
-                existing_user.role = "user"
-                await db.commit()
-                logger.info("✓ Regular user password/role synchronised")
+            # NOTE: user@user.local and manager@manager.local are no longer auto-seeded.
+            # Users must register via /api/auth/register and be approved by admin.
+
+            # Auto-approve any existing connections that have no status set
+            from backend.models.db_connection import DBConnection, ConnectionStatus
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DBConnection)
+                .where(DBConnection.status == None)  # noqa: E711
+                .values(status=ConnectionStatus.APPROVED, is_admin_owned=True)
+            )
+            await db.commit()
 
     except Exception as e:
         logger.warning(f"✗ Could not seed users: {e}")
@@ -180,11 +183,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI Agent Platform",
     description=(
-        "A production-grade local AI agent platform with LangGraph orchestration. "
-        "Supports multi-step reasoning, tool routing, and extensible service connectors."
+        "Production-grade AI analytics platform with RBAC, approval workflows, "
+        "and natural-language database querying.\n\n"
+        "## Authentication\n"
+        "- **Admin** can login directly.\n"
+        "- **User / Manager** must register and be approved by an admin before login.\n\n"
+        "## Roles\n"
+        "| Role | Permissions |\n"
+        "|------|-------------|\n"
+        "| `admin` | Full access, approve/reject users & connections |\n"
+        "| `manager` | Create connections (pending), edit own connections |\n"
+        "| `user` | View approved connections, create connections (pending) |\n"
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True},
 )
 
 # ── Middleware ─────────────────────────────────────────────────────
@@ -206,6 +219,8 @@ app.include_router(queries.router)
 app.include_router(services.router)
 app.include_router(chat.router)
 app.include_router(reports.router)
+app.include_router(dashboards.router)
+app.include_router(admin.router)
 app.include_router(health.router)
 
 

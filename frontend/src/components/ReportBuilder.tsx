@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  getSavedQueries, 
-  createReport, 
+import {
+  getSavedQueries,
+  createReport,
   type SavedQueryItem,
-  type ChartConfig
+  type ChartConfig,
 } from '../api/client';
 import ChartContainer from './ChartContainer';
 import LoadingDots from './LoadingDots';
@@ -13,21 +13,95 @@ interface ReportBuilderProps {
   onCancel: () => void;
 }
 
+// ── Chart catalogue ───────────────────────────────────────────────────────────
+
+type ChartMeta = {
+  type: string;
+  label: string;
+  icon: string;
+  group: string;
+  /** which axis fields are required */
+  axes: ('x' | 'y' | 'value_col')[];
+};
+
+const CHART_CATALOGUE: ChartMeta[] = [
+  // Basic
+  { type: 'bar',             label: 'Bar',            icon: '📊', group: 'Basic',        axes: ['x', 'y'] },
+  { type: 'line',            label: 'Line',           icon: '📈', group: 'Basic',        axes: ['x', 'y'] },
+  { type: 'pie',             label: 'Pie',            icon: '🥧', group: 'Basic',        axes: ['x', 'y'] },
+  { type: 'table',           label: 'Table',          icon: '📄', group: 'Basic',        axes: [] },
+  // Advanced
+  { type: 'area',            label: 'Area',           icon: '🏔️', group: 'Advanced',     axes: ['x', 'y'] },
+  { type: 'horizontal_bar',  label: 'Horiz. Bar',     icon: '↔️', group: 'Advanced',     axes: ['x', 'y'] },
+  { type: 'stacked_bar',     label: 'Stacked Bar',    icon: '🗂️', group: 'Advanced',     axes: ['x', 'y'] },
+  { type: 'combo',           label: 'Combo',          icon: '🔀', group: 'Advanced',     axes: ['x', 'y'] },
+  // Distribution
+  { type: 'histogram',       label: 'Histogram',      icon: '📉', group: 'Distribution', axes: ['x'] },
+  // Relationship
+  { type: 'scatter',         label: 'Scatter',        icon: '✦',  group: 'Relationship', axes: ['x', 'y'] },
+  { type: 'heatmap',         label: 'Heatmap',        icon: '🌡️', group: 'Relationship', axes: ['x', 'y', 'value_col'] },
+  // Hierarchy
+  { type: 'treemap',         label: 'Treemap',        icon: '🗺️', group: 'Hierarchy',    axes: ['x', 'y'] },
+  // KPI
+  { type: 'kpi_card',        label: 'KPI Card',       icon: '🎯', group: 'KPI',          axes: ['y'] },
+  { type: 'gauge',           label: 'Gauge',          icon: '⏱️', group: 'KPI',          axes: ['y'] },
+];
+
+const GROUPS = ['Basic', 'Advanced', 'Distribution', 'Relationship', 'Hierarchy', 'KPI'];
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function getSnapshotData(snapshot: any): any[] {
+  if (!snapshot) return [];
+  
+  let s = snapshot;
+  if (typeof s === 'string') {
+    try { s = JSON.parse(s); } catch(e) { return []; }
+  }
+  
+  // 1. Array-first (direct rows)
+  if (Array.isArray(s)) return s;
+  
+  // 2. Multi-DB flat structure (new orchestrator)
+  if (s.data && Array.isArray(s.data)) return s.data;
+  
+  // 3. Multi-DB legacy structure
+  if (s.multi_db) {
+    if (s.multi_db.merged_rows && Array.isArray(s.multi_db.merged_rows)) return s.multi_db.merged_rows;
+    if (Array.isArray(s.multi_db.results)) return s.multi_db.results.flatMap((r: any) => r.data || []);
+  }
+  
+  // 4. Single-DB SQLExecutor format
+  if (s.rows && Array.isArray(s.rows)) return s.rows;
+  
+  return [];
+}
+
+function isChartable(sql: string): { ok: boolean; reason?: string } {
+  const s = sql.toUpperCase();
+  const hasSelectStar = /SELECT\s+\*/.test(s);
+  const hasAgg = ['COUNT(', 'SUM(', 'AVG(', 'GROUP BY', 'MAX(', 'MIN('].some(k => s.includes(k));
+  if (hasSelectStar && !hasAgg) {
+    return { ok: false, reason: 'Query needs aggregation (COUNT, SUM, GROUP BY) for charts.' };
+  }
+  return { ok: true };
+}
+
+// ── component ─────────────────────────────────────────────────────────────────
+
 const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
-  const [queries, setQueries] = useState<SavedQueryItem[]>([]);
+  const [queries, setQueries]               = useState<SavedQueryItem[]>([]);
   const [loadingQueries, setLoadingQueries] = useState(true);
-  
-  // Selection State
-  const [selectedQueryId, setSelectedQueryId] = useState<string>('');
-  const [previewData, setPreviewData] = useState<SavedQueryItem | null>(null);
+  const [selectedQueryId, setSelectedQueryId] = useState('');
+  const [previewData, setPreviewData]       = useState<SavedQueryItem | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const [chartType, setChartType] = useState<'bar' | 'line' | 'pie' | 'table'>('bar');
-  const [xAxis, setXAxis] = useState<string>('');
-  const [yAxis, setYAxis] = useState<string>('');
-  const [reportName, setReportName] = useState<string>('');
-  
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [chartType, setChartType]           = useState('bar');
+  const [xAxis, setXAxis]                   = useState('');
+  const [yAxis, setYAxis]                   = useState('');
+  const [valueCol, setValueCol]             = useState('');
+  const [reportName, setReportName]         = useState('');
+  const [saving, setSaving]                 = useState(false);
+  const [error, setError]                   = useState<string | null>(null);
 
   useEffect(() => {
     getSavedQueries()
@@ -36,109 +110,66 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
       .finally(() => setLoadingQueries(false));
   }, []);
 
-  // Requirement 2: Fetch preview on selection
   useEffect(() => {
-    if (!selectedQueryId) {
-      setPreviewData(null);
-      setError(null);
-      return;
-    }
-
-    const query = queries.find(q => q.id === selectedQueryId);
-    if (query && !query.query) {
-        setError('Invalid query. Please select a valid saved query.');
-        setPreviewData(null);
-        return;
-    }
-
+    if (!selectedQueryId) { setPreviewData(null); setError(null); return; }
     setLoadingPreview(true);
     setError(null);
-    
     import('../api/client').then(({ getSavedQueryPreview }) => {
       getSavedQueryPreview(selectedQueryId)
         .then(data => {
           setPreviewData(data);
-          // Requirement 2: Reset axes when query changes
-          setXAxis('');
-          setYAxis('');
-          
-          // Requirement 1: Force table mode if not chartable
-          const validation = isChartable(data.query);
-          if (!validation.ok) {
-            setChartType('table');
-          }
-          
-          // Requirement 8: Debug Logging
-          console.log('[ReportBuilder] Query Selected:', data.title);
-          console.log('[ReportBuilder] SQL:', data.query);
-          const columns = Object.keys(getSnapshotData(data.query_result_snapshot)[0] || {});
-          console.log('[ReportBuilder] Extracted Columns:', columns);
+          setXAxis(''); setYAxis(''); setValueCol('');
+          if (!isChartable(data.query_text).ok) setChartType('table');
         })
-        .catch(err => {
-            console.error('[ReportBuilder] Preview Error:', err);
-            // Requirement 3: Clean error message
-            setError('Failed to execute query. Please verify query format.');
-        })
+        .catch(() => setError('Failed to execute query. Please verify query format.'))
         .finally(() => setLoadingPreview(false));
     });
-  }, [selectedQueryId, queries]);
+  }, [selectedQueryId]);
 
-  const selectedQuery = queries.find(q => q.id === selectedQueryId);
+  const meta         = CHART_CATALOGUE.find(c => c.type === chartType)!;
   
-  // Robustly extract columns from various snapshot formats (raw array, .data, or .rows)
-  const getSnapshotData = (snapshot: any) => {
-    if (!snapshot) return [];
-    if (Array.isArray(snapshot)) return snapshot;
-    if (snapshot.data && Array.isArray(snapshot.data)) return snapshot.data;
-    if (snapshot.rows && Array.isArray(snapshot.rows)) return snapshot.rows;
-    return [];
-  };
+  // ── Dynamic Execution Support ──
+  // Prioritize top-level results, fallback to legacy execution snapshots
+  const rawResults = (previewData as any)?.results;
+  const snapshotRows = (Array.isArray(rawResults) && rawResults.length > 0 && rawResults[0].rows)
+    ? rawResults[0].rows
+    : (previewData?.executions?.flatMap(e => getSnapshotData(e.result_json)) || []);
+                       
+  const allColumns = (Array.isArray(rawResults) && rawResults.length > 0 && rawResults[0].columns)
+    ? rawResults[0].columns
+    : (snapshotRows.length > 0 ? Object.keys(snapshotRows[0]) : []);
 
-  // Requirement 1: SQL Aggregation Check
-  const isChartable = (sql: string): { ok: boolean; reason?: string } => {
-    const s = sql.toUpperCase();
-    // Regex to find "SELECT *" more robustly
-    const hasSelectStar = /SELECT\s+\*/i.test(s);
-    // Common aggregation keywords
-    const aggregationKeywords = ['COUNT(', 'SUM(', 'AVG(', 'GROUP BY', 'MAX(', 'MIN('];
-    const hasAggregation = aggregationKeywords.some(kw => s.includes(kw));
-    
-    if (hasSelectStar && !hasAggregation) {
-      return { ok: false, reason: 'This query is not suitable for visualization. Please use aggregated data (COUNT, SUM, GROUP BY).' };
-    }
-    return { ok: true };
-  };
+  const validation   = previewData ? isChartable(previewData.query_text) : { ok: true };
 
-  const snapshotRows = getSnapshotData(previewData?.query_result_snapshot);
-  const availableColumns = snapshotRows.length > 0 ? Object.keys(snapshotRows[0]) : [];
-  const validation = previewData ? isChartable(previewData.query) : { ok: true };
+  // Determine if preview can be shown
+  const axesReady = meta.axes.every(ax => {
+    if (ax === 'x') return !!xAxis;
+    if (ax === 'y') return !!yAxis;
+    if (ax === 'value_col') return !!valueCol;
+    return true;
+  });
+  const showPreview = !!previewData && (chartType === 'table' || (axesReady && validation.ok));
+
+  const previewConfig: ChartConfig | null = showPreview ? {
+    type: chartType as any,
+    chart_type: chartType !== 'table' ? chartType as any : undefined,
+    x_axis: xAxis || undefined,
+    y_axis: yAxis || undefined,
+    value_col: valueCol || undefined,
+    data: snapshotRows,
+  } : null;
 
   const handleSave = async () => {
-    // Requirement 3: Axis Validation
-    if (!reportName || !selectedQueryId) {
-      setError('Please fill in all required fields.');
-      return;
-    }
-
-    if (chartType !== 'table' && (!xAxis || !yAxis)) {
-      setError('Please select X and Y axis');
-      return;
-    }
-
-    if (chartType !== 'table' && !validation.ok) {
-      setError(validation.reason!);
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
+    if (!reportName || !selectedQueryId) { setError('Please fill in all required fields.'); return; }
+    if (chartType !== 'table' && !axesReady) { setError('Please configure all required axes.'); return; }
+    if (chartType !== 'table' && !validation.ok) { setError(validation.reason!); return; }
+    setSaving(true); setError(null);
     try {
       await createReport({
         report_name: reportName,
         chart_type: chartType,
-        chart_config: { x_axis: xAxis, y_axis: yAxis },
-        saved_query_id: selectedQueryId,
-        connection_id: previewData!.connection_id
+        chart_config: { x_axis: xAxis, y_axis: yAxis, value_col: valueCol },
+        query_id: selectedQueryId,
       });
       onSave();
     } catch (err: any) {
@@ -148,28 +179,6 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
     }
   };
 
-  // Requirement 8: Logging
-  useEffect(() => {
-    if (previewData && xAxis && yAxis) {
-        console.log('[ReportBuilder] Preview Update:', {
-            x: xAxis,
-            y: yAxis,
-            rows: snapshotRows.length
-        });
-    }
-  }, [xAxis, yAxis, snapshotRows]);
-
-  // Requirement 3: Preview Logic
-  const showPreview = previewData && (chartType === 'table' || (xAxis && yAxis && validation.ok));
-
-  const previewConfig: ChartConfig | null = showPreview ? {
-    type: chartType,
-    chart_type: chartType !== 'table' ? chartType : undefined,
-    x_axis: xAxis,
-    y_axis: yAxis,
-    data: snapshotRows
-  } : null;
-
   return (
     <div className="report-builder animate-in">
       <div className="builder-header">
@@ -178,15 +187,13 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
       </div>
 
       <div className="builder-layout">
+        {/* ── Left controls ── */}
         <div className="builder-controls">
+
           <div className="field-group">
             <label>Report Name</label>
-            <input 
-              type="text" 
-              value={reportName} 
-              onChange={e => setReportName(e.target.value)} 
-              placeholder="e.g., Monthly Sales Growth"
-            />
+            <input type="text" value={reportName} onChange={e => setReportName(e.target.value)}
+                   placeholder="e.g., Monthly Sales Growth" />
           </div>
 
           <div className="field-group">
@@ -194,60 +201,83 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
             {loadingQueries ? <LoadingDots /> : (
               <select value={selectedQueryId} onChange={e => setSelectedQueryId(e.target.value)}>
                 <option value="">Select a saved query...</option>
-                {queries.map(q => (
-                  <option key={q.id} value={q.id}>{q.title}</option>
-                ))}
+                {queries.map(q => <option key={q.id} value={q.id}>{q.title}</option>)}
               </select>
             )}
           </div>
 
-          {selectedQueryId && (
+          {selectedQueryId && !loadingPreview && (
             <>
-              {loadingPreview ? <LoadingDots /> : (
-                <div className="field-group">
-                  <label>Visualization Type</label>
-                  <div className="chart-type-selector">
-                    {(['bar', 'line', 'pie', 'table'] as const).map(t => (
-                      <button 
-                        key={t}
-                        className={chartType === t ? 'active' : ''}
-                        disabled={t !== 'table' && !validation.ok}
-                        onClick={() => setChartType(t)}
-                        title={t !== 'table' && !validation.ok ? validation.reason : ''}
-                      >
-                        {t.charAt(0).toUpperCase() + t.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-                  {!validation.ok && chartType !== 'table' && (
-                    <p className="validation-warning" style={{ color: '#ff4d4f', fontSize: '0.8rem', marginTop: '4px' }}>
-                      {validation.reason}
-                    </p>
-                  )}
-                </div>
-              )}
+              {/* Chart type selector — grouped */}
+              <div className="field-group">
+                <label>Visualization Type</label>
+                {GROUPS.map(group => {
+                  const groupCharts = CHART_CATALOGUE.filter(c => c.group === group);
+                  return (
+                    <div key={group} style={{ marginBottom: '6px' }}>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #888)',
+                                    textTransform: 'uppercase', letterSpacing: '0.05em',
+                                    marginBottom: '4px' }}>{group}</div>
+                      <div className="chart-type-selector" style={{ flexWrap: 'wrap', gap: '4px' }}>
+                        {groupCharts.map(c => (
+                          <button
+                            key={c.type}
+                            className={chartType === c.type ? 'active' : ''}
+                            disabled={c.type !== 'table' && !validation.ok}
+                            onClick={() => { setChartType(c.type); setXAxis(''); setYAxis(''); setValueCol(''); }}
+                            title={c.type !== 'table' && !validation.ok ? validation.reason : c.label}
+                            style={{ fontSize: '0.75rem', padding: '4px 8px' }}
+                          >
+                            {c.icon} {c.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                {!validation.ok && chartType !== 'table' && (
+                  <p style={{ color: '#ff4d4f', fontSize: '0.8rem', marginTop: '4px' }}>
+                    {validation.reason}
+                  </p>
+                )}
+              </div>
 
-              {chartType !== 'table' && (
-                <div className="field-row">
-                  <div className="field-group">
-                    <label>X-Axis (Label)</label>
-                    <select value={xAxis} onChange={e => setXAxis(e.target.value)}>
-                      <option value="">Select column...</option>
-                      {availableColumns.map(col => <option key={col} value={col}>{col || 'Unnamed'}</option>)}
-                    </select>
-                  </div>
-                  <div className="field-group">
-                    <label>Y-Axis (Value)</label>
-                    <select value={yAxis} onChange={e => setYAxis(e.target.value)}>
-                      <option value="">Select column...</option>
-                      {availableColumns.map(col => <option key={col} value={col}>{col || 'Unnamed'}</option>)}
-                    </select>
-                  </div>
+              {/* Axis selectors — driven by chart meta */}
+              {chartType !== 'table' && allColumns.length > 0 && (
+                <div className="field-row" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                  {meta.axes.includes('x') && (
+                    <div className="field-group" style={{ flex: 1, minWidth: '120px' }}>
+                      <label>X-Axis</label>
+                      <select value={xAxis} onChange={e => setXAxis(e.target.value)}>
+                        <option value="">Select column...</option>
+                        {allColumns.map(col => <option key={col} value={col}>{col}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {meta.axes.includes('y') && (
+                    <div className="field-group" style={{ flex: 1, minWidth: '120px' }}>
+                      <label>{chartType === 'kpi_card' || chartType === 'gauge' ? 'Value' : 'Y-Axis'}</label>
+                      <select value={yAxis} onChange={e => setYAxis(e.target.value)}>
+                        <option value="">Select column...</option>
+                        {allColumns.map(col => <option key={col} value={col}>{col}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {meta.axes.includes('value_col') && (
+                    <div className="field-group" style={{ flex: 1, minWidth: '120px' }}>
+                      <label>Value Column</label>
+                      <select value={valueCol} onChange={e => setValueCol(e.target.value)}>
+                        <option value="">Select column...</option>
+                        {allColumns.map(col => <option key={col} value={col}>{col}</option>)}
+                      </select>
+                    </div>
+                  )}
                 </div>
               )}
             </>
           )}
 
+          {loadingPreview && <LoadingDots />}
           {error && <div className="error-banner">{error}</div>}
 
           <div className="builder-actions">
@@ -258,19 +288,18 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
           </div>
         </div>
 
+        {/* ── Right preview ── */}
         <div className="builder-preview">
           <div className="preview-label">Live Preview</div>
           <div className="preview-container">
-            {showPreview ? (
-              <ChartContainer config={previewConfig!} />
-            ) : selectedQuery ? (
-              <div className="preview-placeholder validation-error">
+            {showPreview && previewConfig ? (
+              <ChartContainer config={previewConfig} />
+            ) : previewData ? (
+              <div className="preview-placeholder">
                 <span className="error-icon">📊</span>
-                {(!validation.ok && chartType !== 'table') ? (
-                    <p style={{ color: '#ff4d4f' }}>{validation.reason}</p>
-                ) : (
-                    <p>Please select X and Y axis to generate chart</p>
-                )}
+                <p>{!validation.ok && chartType !== 'table'
+                  ? validation.reason
+                  : 'Configure axes above to preview'}</p>
               </div>
             ) : (
               <div className="preview-placeholder">
