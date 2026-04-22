@@ -21,14 +21,13 @@ class ReportResponse(ReportBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+from backend.api.models.responses import SQLDataContract
+
 class ReportDataResponse(BaseModel):
     report_id: UUID
-    successful_data: List[Dict[str, Any]]
-    failed_sources: List[Dict[str, Any]] # [{"id": str, "error": str}]
+    results: SQLDataContract
     chart_type: str
     chart_config: Dict[str, Any]
-    row_count: int
-    execution_time_ms: int
     cache_status: Optional[str] = "MISS"
     request_id: Optional[str] = None
 

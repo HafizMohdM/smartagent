@@ -53,8 +53,9 @@ class DatabaseTool(BaseTool):
         )
 
     async def execute(self, params: Dict[str, Any], session_id: str) -> ToolResult:
-        """Run the full database query pipeline."""
+        """Run the full database query pipeline via SchemaAwareSQLPipeline."""
         from backend.data.executor.generator import normalize_query, remove_limit
+        from backend.data.executor.sql_pipeline import SchemaAwareSQLPipeline
 
         question = params.get("question", "")
         if not question:
@@ -69,9 +70,6 @@ class DatabaseTool(BaseTool):
         question_lower = question.lower()
         report_mode = any(kw in question_lower for kw in REPORT_KEYWORDS)
 
-        # Normalize vague / name-only inputs before entering the pipeline
-        question = normalize_query(question)
-
         # 1. Get the connector for this session
         connector = self._connectors.get(session_id)
         if connector is None or not connector.is_connected:
@@ -84,100 +82,58 @@ class DatabaseTool(BaseTool):
             # 2. Schema Retrieval
             logger.info(f"[Pipeline] Step 1: Retrieving schema for session {session_id}")
             schema = connector.get_schema()
-
-            # 3. SQL Generation
-            logger.info("[Pipeline] Step 2: Generating SQL from user question")
             connection_id = getattr(connector, "_connection_id", None)
-            sql = await self._sql_generator.generate(
-                user_query=question,
+            
+            # 3. Create trace context
+            trace_context = {
+                "request_id": session_id,  # Using session_id as anchor for now
+                "connection_id": connection_id,
+                "tool": "database_query"
+            }
+
+            # 4. Run through the centralized pipeline
+            logger.info("[Pipeline] Delegating to SchemaAwareSQLPipeline")
+            from backend.data.executor.contract import validate_db_result, get_error_fallback
+            pipeline = SchemaAwareSQLPipeline()
+            result = await pipeline.run(
+                query=question,
                 schema=schema,
+                connector=connector,
                 connection_id=connection_id,
                 report_mode=report_mode,
+                trace_context=trace_context,
             )
 
-            # 4. Response Parsing & Validation
-            logger.info(f"[Pipeline] Step 3: Validating generator output")
-            
-            from backend.agent.utils.sql_parser import SQLParser
-            pure_sql = SQLParser.extract_sql(sql)
-            
-            # --- Non-SQL Responses (Metadata/Lookup) ---
-            if not pure_sql:
-                resp_type = SQLParser.get_response_type(sql)
-                if resp_type in ["metadata", "lookup"]:
-                    items = []
-                    parts = sql.split("DATA:")
-                    if len(parts) > 1:
-                        raw_items = parts[1].strip().split('\n')
-                        items = [item.strip("*- \t") for item in raw_items if item.strip()]
-                    else:
-                        items = [sql.split('\n', 1)[-1].strip()]
-                        
-                    results = {"rows": [{"Result": item} for item in items], "columns": ["Result"]}
-                    return ToolResult(
-                        success=True,
-                        data=results,
-                        metadata={"generated_sql": None},
-                    )
-                return ToolResult(
-                    success=False,
-                    error=sql,
-                    metadata={"generated_sql": None},
-                )
-
-            # --- SQL Validation ---
-            # Safety net: strip LIMIT in report mode even if LLM ignored the instruction
-            if report_mode:
-                pure_sql = remove_limit(pure_sql)
-
-            is_valid, reason = self._sql_validator.validate(pure_sql)
-            if not is_valid:
-                return ToolResult(
-                    success=False,
-                    error=f"SQL validation failed: {reason}",
-                    metadata={"generated_sql": pure_sql},
-                )
-
-            # 5. SQL Execution & Self-Correction Loop
-            logger.info("[Pipeline] Step 4: Executing SQL")
-            from backend.data.executor import executor
-            sql_executor = executor.SQLExecutor(connector)
-
-            try:
-                results = await sql_executor.execute(pure_sql)
+            # 5. Convert pipeline result to ToolResult with strict validation
+            if result.success:
+                tool_data = result.to_tool_data()
+                # Final tool-layer validation (MANDATORY per senior req)
+                validated_data = validate_db_result(tool_data, source="database_tool", trace_context=trace_context)
+                
                 return ToolResult(
                     success=True,
-                    data=results,
-                    metadata={"generated_sql": pure_sql},
+                    data=validated_data,
+                    metadata={
+                        "generated_sql": result.sql,
+                        "intent": result.intent,
+                        "domain": result.domain,
+                        "repairs_applied": result.repairs_applied,
+                        **result.meta,
+                    },
                 )
-            except Exception as e:
-                logger.warning(f"Initial SQL execution failed: {e}. Attempting self-correction...")
+            else:
+                fallback = get_error_fallback(result.error_message or "Query processing failed.", source="database_tool", trace_context=trace_context)
+                return ToolResult(
+                    success=False,
+                    error=result.error_message or "Query processing failed.",
+                    data=fallback,
+                    metadata={
+                        "generated_sql": result.sql,
+                        "intent": result.intent,
+                    },
+                )
 
-                # Retry once with error context
-                corrected_sql_raw = await self._sql_generator.generate(
-                    user_query=question,
-                    schema=schema,
-                    connection_id=connection_id,
-                    error_context=str(e),
-                    report_mode=report_mode,
-                )
-                corrected_sql = SQLParser.extract_sql(corrected_sql_raw) or corrected_sql_raw
-                if report_mode:
-                    corrected_sql = remove_limit(corrected_sql)
-                
-                try:
-                    results = await sql_executor.execute(corrected_sql)
-                    return ToolResult(
-                        success=True,
-                        data=results,
-                        metadata={"generated_sql": corrected_sql},
-                    )
-                except Exception as e2:
-                    return ToolResult(
-                        success=False,
-                        error=f"SQL execution failed after correction: {e2}",
-                        metadata={"generated_sql": corrected_sql},
-                    )
+
         except Exception as e:
             logger.error(f"Database tool error: {e}", exc_info=True)
             return ToolResult(success=False, error=f"Unexpected error: {str(e)}")

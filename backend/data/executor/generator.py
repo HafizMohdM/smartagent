@@ -59,6 +59,7 @@ def enforce_pie_sql(sql: str) -> str:
 
 SQL_GENERATION_PROMPT = """You are a production-grade database AI assistant.
 {db_context}
+{domain_hint}
 ---
 
 STEP 1: DETECT INTENT
@@ -81,8 +82,10 @@ STEP 2: COLUMN MAPPING RULES (CRITICAL — READ CAREFULLY)
     WRONG:  e.last_name           ← invented, does NOT exist
     CORRECT: use only what appears in "Columns:" for that table in SCHEMA
 
-NAME COLUMNS found in the relevant tables (use ONLY these exact names):
 {name_column_hints}
+
+SYNONYM RESOLUTION HINTS (Mapped from vague user terms):
+{resolved_columns_hint}
 
 NAME SEARCH RULES:
 - When searching by a person's name, use the columns listed above.
@@ -266,6 +269,8 @@ class SQLGenerator:
         report_mode: bool = False,
         db_name: Optional[str] = None,
         all_db_names: Optional[List[str]] = None,
+        domain_hint: str = "",
+        resolved_columns_hint: str = "",
     ) -> str:
         """
         Generate a SQL query from a natural-language question.
@@ -320,6 +325,8 @@ class SQLGenerator:
                 filtered_relationships=formatted_relationships,
                 name_column_hints=name_column_hints,
                 db_context=db_context,
+                domain_hint=domain_hint,
+                resolved_columns_hint=resolved_columns_hint,
             )),
             HumanMessage(content=user_query),
         ]

@@ -1,4 +1,5 @@
 import uuid
+from typing import List
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Text, Table
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -21,13 +22,17 @@ class Query(Base):
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String, nullable=False)
     query_text = Column(String, nullable=False) # Natural language query
-    generated_sql = Column(Text, nullable=True) # [NEW] Single source of truth for dynamic execution
+    generated_sql = Column(Text, nullable=False) # [NEW] Single source of truth for dynamic execution
     username = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     executions = relationship("QueryExecution", back_populates="query", cascade="all, delete-orphan")
     widgets = relationship("DashboardWidget", back_populates="query")
     connections = relationship("DBConnection", secondary=query_connections, backref="queries")
+
+    @property
+    def connection_ids(self) -> List[uuid.UUID]:
+        return [c.id for c in self.connections]
 
     # Transient attributes (not persisted) used for dynamic execution responses
     results = None

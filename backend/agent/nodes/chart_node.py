@@ -6,7 +6,7 @@ import logging
 from typing import Any, Dict
 
 from backend.agent.state import AgentState
-from backend.agent.utils.chart_generator import ChartGenerator, enforce_chart_logic
+from backend.agent.utils.chart_generator import ChartGenerator, enforce_chart_logic, validate_chart_data
 from backend.data.executor.generator import validate_chart_sql, enforce_pie_sql
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,10 @@ async def chart_node(state: AgentState) -> Dict[str, Any]:
     columns = data.get("columns", [])
     rows = data.get("rows", [])
 
+    # Filter out metadata fields from chart column analysis
+    _METADATA_FIELDS = {"_source_db", "_row_num", "_rank", "_id"}
+    clean_columns = [c for c in columns if c.lower() not in _METADATA_FIELDS]
+
     if not rows:
         return {
             "chart_config": None,
@@ -43,9 +47,9 @@ async def chart_node(state: AgentState) -> Dict[str, Any]:
     plan = state.get("plan", {})
     needs_chart = plan.get("needs_chart", False)
 
-    # 1. Generate core chart config
+    # 1. Generate core chart config (using clean columns)
     generator = ChartGenerator()
-    chart_config = generator.generate_config(columns, rows)
+    chart_config = generator.generate_config(clean_columns or columns, rows)
 
     # Store the visual chart type separately (used when toggling table ↔ chart)
     chart_config["chart_type"] = chart_config.get("type", "bar")
@@ -118,7 +122,21 @@ async def chart_node(state: AgentState) -> Dict[str, Any]:
     else:
         chart_config["data"] = rows[:MAX_CHART_ROWS]
 
-    # 7. Preview rows and metadata
+    # 7. Chart-safe validation (final safety net)
+    if active_type != "table":
+        validated = validate_chart_data(
+            columns=clean_columns or columns,
+            rows=chart_config["data"],
+            chart_type=active_type,
+        )
+        if validated.get("explanation"):
+            # Chart is impossible — fallback to table with explanation
+            logger.warning(f"Chart safety failsafe: {validated['explanation']}")
+            chart_config["type"] = "table"
+            chart_config["explanation"] = validated["explanation"]
+            chart_config["data"] = rows[:MAX_TABLE_ROWS]
+
+    # 8. Preview rows and metadata
     preview_rows = rows[:20]
     metadata = {
         "row_count": data.get("row_count") or len(rows),

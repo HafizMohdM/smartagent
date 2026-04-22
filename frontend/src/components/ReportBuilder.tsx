@@ -130,10 +130,15 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
   
   // ── Dynamic Execution Support ──
   // Prioritize top-level results, fallback to legacy execution snapshots
-  const snapshotRows = (previewData as any)?.results || 
-                       previewData?.executions?.flatMap(e => getSnapshotData(e.result_json)) || [];
+  const rawResults = (previewData as any)?.results;
+  const snapshotRows = (Array.isArray(rawResults) && rawResults.length > 0 && rawResults[0].rows)
+    ? rawResults[0].rows
+    : (previewData?.executions?.flatMap(e => getSnapshotData(e.result_json)) || []);
                        
-  const allColumns   = snapshotRows.length > 0 ? Object.keys(snapshotRows[0]) : [];
+  const allColumns = (Array.isArray(rawResults) && rawResults.length > 0 && rawResults[0].columns)
+    ? rawResults[0].columns
+    : (snapshotRows.length > 0 ? Object.keys(snapshotRows[0]) : []);
+
   const validation   = previewData ? isChartable(previewData.query_text) : { ok: true };
 
   // Determine if preview can be shown

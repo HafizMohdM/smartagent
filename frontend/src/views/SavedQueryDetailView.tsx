@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
-    getSavedQuery, updateSavedQuery, deleteSavedQuery,
-    type SavedQueryItem 
+    getSavedQuery, updateSavedQuery, deleteSavedQuery, executeQuery,
+    type SavedQueryItem, type SQLDataContract
 } from '../api/client';
 import LoadingDots from '../components/LoadingDots';
 
@@ -21,21 +21,37 @@ export default function SavedQueryDetailView() {
     const [editSql, setEditSql] = useState('');
     const [saving, setSaving] = useState(false);
     const [executing, setExecuting] = useState(false);
+    const [executionResult, setExecutionResult] = useState<SQLDataContract | null>(null);
 
     const fetchData = async () => {
         if (!id) return;
-        setExecuting(true);
+        setLoading(true);
         setError('');
         try {
-            const data = await getSavedQuery(id);
-            setQuery(data);
-            setEditTitle(data.title);
-            setEditSql(data.query_text);
+            // 1. Fetch metadata (Requirement #4)
+            const meta = await getSavedQuery(id);
+            setQuery(meta);
+            setEditTitle(meta.title);
+            setEditSql(meta.generated_sql || meta.query_text);
+
+            // 2. Auto-execute if SQL exists (Requirement #5)
+            if (meta.generated_sql && meta.connection_ids?.length > 0) {
+                setExecuting(true);
+                try {
+                    const result = await executeQuery(meta.generated_sql, meta.connection_ids);
+                    setExecutionResult(result);
+                } catch (execErr: any) {
+                    setError(execErr.message || 'Execution failed');
+                } finally {
+                    setExecuting(false);
+                }
+            } else if (!meta.generated_sql) {
+                setError('Query definition is missing. Please re-save.');
+            }
         } catch (err: any) {
             setError(err.message || 'Failed to fetch query details');
         } finally {
             setLoading(false);
-            setExecuting(false);
         }
     };
 
@@ -72,7 +88,14 @@ export default function SavedQueryDetailView() {
     };
 
     const handleRun = () => {
-        fetchData(); // Re-executes because getSavedQuery points to /preview
+        if (query?.generated_sql && query.connection_ids) {
+            setExecuting(true);
+            setError('');
+            executeQuery(query.generated_sql, query.connection_ids)
+                .then(setExecutionResult)
+                .catch(err => setError(err.message))
+                .finally(() => setExecuting(false));
+        }
     };
 
     if (loading) return <div className="panel-loading"><LoadingDots /></div>;
@@ -80,15 +103,15 @@ export default function SavedQueryDetailView() {
     if (!query) return <div className="panel-empty">Query not found</div>;
 
     // ── Data Processing ──
-    let rows: any[] = query.results || [];
-    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+    const rows = executionResult?.rows || [];
+    const columns = executionResult?.columns || [];
     
     // Aggregated row count and DB names
-    const rowCount = query.execution_stats?.total_rows || query.executions?.reduce((acc, e) => acc + (e.row_count || 0), 0) || 0;
-    const dbNames = query.executions?.map(e => e.database_name).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Unknown';
+    const rowCount = executionResult?.meta?.row_count || 0;
+    const dbNames = query.executions?.map(e => e.database_name).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Connected Databases';
     
     // SQL View (Source of Truth)
-    const sqlViews = query.generated_sql || query.query_text;
+    const sqlViews = query.generated_sql;
 
     return (
         <div className="detail-view animate-in">
@@ -227,8 +250,8 @@ export default function SavedQueryDetailView() {
                                     ))}
                                 </tbody>
                             </table>
-                        ) : !executing && (
-                            <div className="empty-results">No data returned or query has not been run.</div>
+                        ) : !executing && !error && (
+                            <div className="empty-results">No records found</div>
                         )}
                     </div>
                 </div>

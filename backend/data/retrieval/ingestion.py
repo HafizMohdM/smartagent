@@ -112,7 +112,7 @@ class SchemaIngestionService:
         return tables
 
     async def _enrich_and_embed(self, tables_data: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Generates synonyms and batch embeddings."""
+        """Generates synonyms, table embeddings, and per-column embeddings."""
         results = []
         texts_to_embed = []
         
@@ -121,7 +121,7 @@ class SchemaIngestionService:
             synonyms = self._generate_synonyms(data["table_name"])
             data["synonyms"] = synonyms
             
-            # Text for embedding
+            # Text for table-level embedding
             embed_text = f"Table: {data['table_name']}. Description: {data['description']}. Synonyms: {', '.join(synonyms)}."
             texts_to_embed.append(embed_text)
             results.append(data)
@@ -129,12 +129,30 @@ class SchemaIngestionService:
         if not texts_to_embed:
             return []
 
-        # Batch Embedding
+        # Batch Table-Level Embedding
         logger.info(f"Generating embeddings for {len(texts_to_embed)} tables...")
         embeddings = await self._embedding_service.aembed_documents(texts_to_embed)
         
         for i, data in enumerate(results):
             data["embedding"] = embeddings[i]
+
+        # Per-Column Embeddings (for EmbeddingColumnResolver)
+        for data in results:
+            columns = data.get("columns", [])
+            if columns:
+                col_texts = [
+                    f"Database column: {col.replace('_', ' ')} ({col}) in table {data['table_name']}"
+                    for col in columns
+                ]
+                try:
+                    col_embeddings = await self._embedding_service.aembed_documents(col_texts)
+                    data["column_embeddings"] = dict(zip(columns, [emb for emb in col_embeddings]))
+                    logger.info(f"Generated {len(col_embeddings)} column embeddings for {data['table_name']}")
+                except Exception as e:
+                    logger.warning(f"Column embedding generation failed for {data['table_name']}: {e}")
+                    data["column_embeddings"] = None
+            else:
+                data["column_embeddings"] = None
             
         return results
 
@@ -172,7 +190,8 @@ class SchemaIngestionService:
                     description=table_data["description"],
                     synonyms=table_data["synonyms"],
                     relationships=table_data["relationships"],
-                    embedding=table_data["embedding"]
+                    embedding=table_data["embedding"],
+                    column_embeddings=table_data.get("column_embeddings"),
                 ).on_conflict_do_update(
                     constraint="uq_connection_schema_table",
                     set_={
@@ -181,6 +200,7 @@ class SchemaIngestionService:
                         "synonyms": table_data["synonyms"],
                         "relationships": table_data["relationships"],
                         "embedding": table_data["embedding"],
+                        "column_embeddings": table_data.get("column_embeddings"),
                         "updated_at": datetime.now(timezone.utc)
                     }
                 )

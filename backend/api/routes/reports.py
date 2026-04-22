@@ -1,4 +1,6 @@
+import logging
 from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.models.reports import ReportCreateRequest, ReportResponse, ReportDataResponse, SystemStatisticsResponse
@@ -7,6 +9,9 @@ from backend.data.pool.session import get_db
 from backend.security.jwt_auth import get_current_user
 from backend.models.user import User
 from backend.data.executor import reports_crud
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
@@ -136,14 +141,15 @@ async def get_report_data(
 
         return ReportDataResponse(
             report_id=report.id,
-            successful_data=results["successful_data"],
-            failed_sources=results["failed_sources"],
+            results={
+                "rows": results["rows"],
+                "columns": results["columns"],
+                "meta": results["meta"]
+            },
             chart_type=report.chart_type,
             chart_config=report.chart_config,
-            row_count=results["row_count"],
-            execution_time_ms=int(results.get("execution_time_ms", 0)),
-            cache_status=results.get("cache_status", "MISS"),
-            request_id=results.get("request_id")
+            cache_status=results["meta"].get("cache_status", "MISS"),
+            request_id=results["meta"].get("request_id")
         )
     except ValueError as e:
         err_str = str(e)

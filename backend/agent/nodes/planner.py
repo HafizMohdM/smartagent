@@ -48,14 +48,16 @@ async def planner_node(state: AgentState) -> Dict[str, Any]:
     tools_desc = json.dumps(registry.list_tools(), indent=2)
 
     retry_count = state.get("retry_count", 0)
+    # ── Prepare Context ───────────────────────────────────────────
+    from backend.agent.utils.data_utils import compact_history_for_llm
+    history = state.get("messages", [])
+    history_text = compact_history_for_llm(history[-10:])  # Last 10 turns, compacted
+    
     schema_context = state.get("schema_context", "")
     error_context = state.get("error", "")
-
-    # Build conversation context
-    history = state.get("messages", [])
-    history_text = ""
-    for msg in history[-10:]:
-        history_text += f"{msg['role']}: {msg['content']}\n"
+    # Safety: Truncate massive schema context if it leaks from RAG
+    if len(schema_context) > 5000:
+        schema_context = schema_context[:5000] + "... [Truncated]"
 
     llm = ChatOpenAI(
         model=settings.LLM_MODEL,
@@ -74,9 +76,10 @@ async def planner_node(state: AgentState) -> Dict[str, Any]:
     messages = [
         SystemMessage(content=PLANNER_SYSTEM_PROMPT.format(tools=tools_desc)),
         HumanMessage(content=(
-            f"Conversation history:\n{history_text}\n\n"
+            f"Conversation history (Sanitized):\n{history_text}\n\n"
             f"Database Schema Context (RAG):\n{schema_context}\n\n"
-            f"Current user query: {state['user_query']}"
+            f"Current user query: {state['user_query']}\n"
+            "NOTE: The agent is in PREVIEW MODE. Data responses are restricted to 5 columns and 10 rows for chat safety."
             f"{adaptive_context}"
         )),
     ]

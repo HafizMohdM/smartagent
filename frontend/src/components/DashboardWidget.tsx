@@ -29,13 +29,14 @@ const DashboardWidget: React.FC<DashboardWidgetProps> = ({ report, onRemove }) =
       const res = await getReportData(report.id);
       
       setChartConfig({
-        data: res.successful_data,
+        data: res.results.rows,
         x_axis: res.chart_config?.x_axis ?? report.chart_config.x_axis,
         y_axis: res.chart_config?.y_axis ?? report.chart_config.y_axis,
         chart_type: res.chart_type,
         cache_status: res.cache_status,
       });
-      setFailedSources(res.failed_sources || []);
+      setFailedSources(res.results.meta.failed_sources || []);
+
       setLastUpdated(new Date());
     } catch (err: any) {
       // Guarantee 4: Handle 413 structured payload

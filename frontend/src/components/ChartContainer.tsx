@@ -14,7 +14,7 @@ import type { ChartConfig } from '../api/client';
 interface Props { config: ChartConfig; }
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const P = ['#6366f1','#06b6d4','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6'];
+const P = ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
 const PAGE = 100;
 
 function toNum(v: any): number {
@@ -31,8 +31,10 @@ function norm(data: any[], x?: string, y?: string) {
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: '#1e293b', border: 'none', borderRadius: 8, padding: '8px 12px',
-                  color: '#f8fafc', fontSize: '0.78rem', boxShadow: '0 4px 20px rgba(0,0,0,0.25)' }}>
+    <div style={{
+      background: '#1e293b', border: 'none', borderRadius: 8, padding: '8px 12px',
+      color: '#f8fafc', fontSize: '0.78rem', boxShadow: '0 4px 20px rgba(0,0,0,0.25)'
+    }}>
       <div style={{ fontWeight: 600, marginBottom: 4, color: '#94a3b8' }}>{label}</div>
       {payload.map((p: any, i: number) => (
         <div key={i} style={{ color: p.color || '#fff' }}>
@@ -67,15 +69,15 @@ function GaugeChart({ config }: { config: ChartConfig }) {
   const start = toXY(0), end = toXY(angle);
   const large = angle > 180 ? 1 : 0;
   const arcPath = `M ${start.x} ${start.y} A ${r} ${r} 0 ${large} 1 ${end.x} ${end.y}`;
-  const bgPath  = `M ${toXY(0).x} ${toXY(0).y} A ${r} ${r} 0 1 1 ${toXY(180).x} ${toXY(180).y}`;
+  const bgPath = `M ${toXY(0).x} ${toXY(0).y} A ${r} ${r} 0 1 1 ${toXY(180).x} ${toXY(180).y}`;
   return (
-    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
       <svg viewBox="0 0 200 110" width={200} height={110}>
         <path d={bgPath} fill="none" stroke="#e2e8f0" strokeWidth={14} strokeLinecap="round" />
         <path d={arcPath} fill="none" stroke="url(#gaugeGrad)" strokeWidth={14} strokeLinecap="round" />
         <defs>
           <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%"   stopColor="#6366f1" />
+            <stop offset="0%" stopColor="#6366f1" />
             <stop offset="100%" stopColor="#06b6d4" />
           </linearGradient>
         </defs>
@@ -119,7 +121,7 @@ function HeatmapChart({ config }: { config: ChartConfig }) {
                 const bg = `rgba(99,102,241,${0.08 + t * 0.82})`;
                 return (
                   <td key={x} title={`${x}, ${y}: ${v}`}
-                      style={{ background: bg, color: t > 0.55 ? '#fff' : 'var(--text-primary)' }}>
+                    style={{ background: bg, color: t > 0.55 ? '#fff' : 'var(--text-primary)' }}>
                     {v}
                   </td>
                 );
@@ -165,7 +167,7 @@ function TreemapChart({ config }: { config: ChartConfig }) {
         const pct = (toNum(row[y_axis]) / total) * 100;
         return (
           <div key={i} className="treemap-cell" title={`${row[x_axis]}: ${row[y_axis]}`}
-               style={{ width: `${Math.max(pct, 4)}%`, background: P[i % P.length] }}>
+            style={{ width: `${Math.max(pct, 4)}%`, background: P[i % P.length] }}>
             {String(row[x_axis])}
           </div>
         );
@@ -177,7 +179,7 @@ function TreemapChart({ config }: { config: ChartConfig }) {
 // ── Table ─────────────────────────────────────────────────────────────────────
 function TableView({ data, page, setPage }: { data: any[]; page: number; setPage: (p: number) => void }) {
   const total = Math.ceil(data.length / PAGE);
-  const rows  = data.slice(page * PAGE, (page + 1) * PAGE);
+  const rows = data.slice(page * PAGE, (page + 1) * PAGE);
   return (
     <div className="table-preview-container">
       <table className="preview-table">
@@ -205,11 +207,11 @@ function TableView({ data, page, setPage }: { data: any[]; page: number; setPage
 const ChartContainer: React.FC<Props> = ({ config }) => {
   const { type, chart_type, x_axis, y_axis, stack_col, data } = config;
   const resolved = chart_type || type;
-  const isTable  = resolved === 'table';
-  const isKpi    = resolved === 'kpi_card' || resolved === 'gauge';
+  const isTable = resolved === 'table';
+  const isKpi = resolved === 'kpi_card' || resolved === 'gauge';
 
-  const [view, setView]   = React.useState<'chart' | 'table'>(isTable ? 'table' : 'chart');
-  const [page, setPage]   = React.useState(0);
+  const [view, setView] = React.useState<'chart' | 'table'>(isTable ? 'table' : 'chart');
+  const [page, setPage] = React.useState(0);
   React.useEffect(() => { setPage(0); }, [data]);
 
   if (!data || data.length === 0) {
@@ -218,11 +220,11 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
 
   // Non-Recharts charts
   const custom: Record<string, React.ReactNode> = {
-    kpi_card:  <KpiCard config={config} />,
-    gauge:     <GaugeChart config={config} />,
-    heatmap:   <HeatmapChart config={config} />,
+    kpi_card: <KpiCard config={config} />,
+    gauge: <GaugeChart config={config} />,
+    heatmap: <HeatmapChart config={config} />,
     histogram: <HistogramChart config={config} />,
-    treemap:   <TreemapChart config={config} />,
+    treemap: <TreemapChart config={config} />,
   };
 
   const renderRechart = () => {
@@ -239,7 +241,7 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: '0.78rem' }} />
             <Line type="monotone" dataKey="value" stroke={P[0]} strokeWidth={2.5}
-                  name={y_axis || 'Value'} dot={{ r: 3, fill: P[0] }} activeDot={{ r: 6 }} />
+              name={y_axis || 'Value'} dot={{ r: 3, fill: P[0] }} activeDot={{ r: 6 }} />
           </LineChart>
         );
 
@@ -248,7 +250,7 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
           <AreaChart data={cd}>
             <defs>
               <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor={P[0]} stopOpacity={0.25} />
+                <stop offset="5%" stopColor={P[0]} stopOpacity={0.25} />
                 <stop offset="95%" stopColor={P[0]} stopOpacity={0} />
               </linearGradient>
             </defs>
@@ -258,7 +260,7 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: '0.78rem' }} />
             <Area type="monotone" dataKey="value" stroke={P[0]} fill="url(#ag)"
-                  strokeWidth={2.5} name={y_axis || 'Value'} />
+              strokeWidth={2.5} name={y_axis || 'Value'} />
           </AreaChart>
         );
 
@@ -293,7 +295,7 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: '0.78rem' }} />
             {(keys.length ? keys : ['value']).map((k, i) => (
-              <Bar key={k} dataKey={k} stackId="s" fill={P[i % P.length]} radius={i === keys.length - 1 ? [3,3,0,0] : [0,0,0,0]} />
+              <Bar key={k} dataKey={k} stackId="s" fill={P[i % P.length]} radius={i === keys.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]} />
             ))}
           </BarChart>
         );
@@ -308,8 +310,8 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
             <YAxis yAxisId="r" orientation="right" {...axisStyle} />
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: '0.78rem' }} />
-            <Bar    yAxisId="l" dataKey="value" fill={P[2]} name={y_axis || 'Value'} radius={[4,4,0,0]} opacity={0.85} />
-            <Line   yAxisId="r" type="monotone" dataKey="value" stroke={P[0]} strokeWidth={2.5} dot={false} name="Trend" />
+            <Bar yAxisId="l" dataKey="value" fill={P[2]} name={y_axis || 'Value'} radius={[4, 4, 0, 0]} opacity={0.85} />
+            <Line yAxisId="r" type="monotone" dataKey="value" stroke={P[0]} strokeWidth={2.5} dot={false} name="Trend" />
           </BarChart>
         );
 
@@ -317,9 +319,9 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
         return (
           <PieChart>
             <Pie data={cd} cx="50%" cy="50%" outerRadius={90} innerRadius={30}
-                 dataKey="value" nameKey="name" paddingAngle={2}
-                 label={({ name, percent }: any) => `${name} (${(percent * 100).toFixed(0)}%)`}
-                 labelLine={{ stroke: '#94a3b8', strokeWidth: 1 }}>
+              dataKey="value" nameKey="name" paddingAngle={2}
+              label={({ name, percent }: any) => `${name} (${(percent * 100).toFixed(0)}%)`}
+              labelLine={{ stroke: '#94a3b8', strokeWidth: 1 }}>
               {cd.map((_, i) => <Cell key={i} fill={P[i % P.length]} />)}
             </Pie>
             <Tooltip content={<CustomTooltip />} />
@@ -362,9 +364,9 @@ const ChartContainer: React.FC<Props> = ({ config }) => {
         <div className="chart-toggle-header">
           <div className="chart-toggle-group">
             <button className={`chart-toggle-btn ${view === 'table' ? 'active' : ''}`}
-                    onClick={() => setView('table')}>📄 Table</button>
+              onClick={() => setView('table')}>📄 Table</button>
             <button className={`chart-toggle-btn ${view === 'chart' ? 'active' : ''}`}
-                    onClick={() => setView('chart')}>📊 Chart</button>
+              onClick={() => setView('chart')}>📊 Chart</button>
           </div>
         </div>
       )}

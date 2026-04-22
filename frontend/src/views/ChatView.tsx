@@ -4,6 +4,7 @@ import {
     getChatSessions,
     getChatSession,
     renameChatSession,
+    deleteChatSession,
     sendDbChatMessage,
     getConnections,
     createSavedQuery,
@@ -40,7 +41,7 @@ export default function ChatView() {
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [loadingHistory, setLoadingHistory] = useState(false);
-    
+
     // Connection state — auto-select first available, no manual picker in chat
     const [connections, setConnections] = useState<DBConnectionItem[]>([]);
     const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([]);
@@ -68,7 +69,7 @@ export default function ChatView() {
                     try {
                         const parsed = JSON.parse(stored);
                         validIds = parsed.filter((id: string) => data.some(db => db.id === id && db.status === 'approved'));
-                    } catch(err) {}
+                    } catch (err) { }
                 }
                 if (validIds.length === 0) {
                     const first = data.find(c => c.status === 'approved');
@@ -85,7 +86,7 @@ export default function ChatView() {
     const loadSessions = async (connId?: string) => {
         const idToUse = connId || selectedConnectionIds[0];
         if (!idToUse) return;
-        
+
         try {
             const res = await getChatSessions(idToUse);
             setSessions(res);
@@ -234,7 +235,7 @@ export default function ChatView() {
                 natural_language_query: msgToSave.content,
                 query: msgToSave.sql || '',
                 // Persist chart config if available, otherwise general metadata
-                query_result_snapshot: msgToSave.chart ? { chart: msgToSave.chart } : msgToSave.metadata, 
+                query_result_snapshot: msgToSave.chart ? { chart: msgToSave.chart } : msgToSave.metadata,
                 row_count: msgToSave.metadata?.row_count,
             });
             setMsgToSave(null);
@@ -271,6 +272,24 @@ export default function ChatView() {
         setRenamingId(null);
     };
 
+    const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!window.confirm("Are you sure you want to delete this chat session?")) return;
+
+        try {
+            console.log("Deleting session:", sessionId);
+            await deleteChatSession(sessionId);
+            setSessions(prev => prev.filter(s => s.session_id !== sessionId));
+            if (activeSessionId === sessionId) {
+                setActiveSessionId(null);
+                setMessages([]);
+            }
+        } catch (err) {
+            console.error("Delete failed:", err);
+            alert("Failed to delete session");
+        }
+    };
+
     const dbSuggestions = [
         'Analyze employee attendance patterns',
         'Compare sales performance across regions',
@@ -302,9 +321,11 @@ export default function ChatView() {
                 <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }}>
                     {/* Pending connections notice */}
                     {connections.filter(c => c.status === 'pending').length > 0 && (
-                        <div style={{ margin: '8px 8px 4px', padding: '8px 10px', background: 'rgba(245,158,11,0.12)',
-                                      border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px',
-                                      fontSize: '0.75rem', color: '#f59e0b' }}>
+                        <div style={{
+                            margin: '8px 8px 4px', padding: '8px 10px', background: 'rgba(245,158,11,0.12)',
+                            border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px',
+                            fontSize: '0.75rem', color: '#f59e0b'
+                        }}>
                             ⏳ {connections.filter(c => c.status === 'pending').length} connection(s) awaiting approval
                         </div>
                     )}
@@ -318,8 +339,8 @@ export default function ChatView() {
                                 <div style={{ padding: '16px 8px', textAlign: 'center', fontSize: '0.8rem', color: 'var(--sidebar-muted)' }}>No previous chats</div>
                             ) : sessions.map(s => (
                                 <div key={s.session_id}
-                                     className={`chat-session-item ${activeSessionId === s.session_id ? 'active' : ''}`}
-                                     onClick={() => renamingId !== s.session_id && setActiveSessionId(s.session_id)}>
+                                    className={`chat-session-item ${activeSessionId === s.session_id ? 'active' : ''}`}
+                                    onClick={() => renamingId !== s.session_id && setActiveSessionId(s.session_id)}>
                                     {renamingId === s.session_id ? (
                                         <input
                                             autoFocus
@@ -339,22 +360,22 @@ export default function ChatView() {
                                             }}
                                         />
                                     ) : (
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', overflow: 'hidden' }}>
                                             <div className="session-name" style={{ flex: 1 }}>
                                                 {s.session_name || 'Chat Session'}
                                             </div>
-                                            <button
-                                                onClick={e => startRename(s, e)}
-                                                title="Rename"
-                                                style={{
-                                                    background: 'transparent', border: 'none',
-                                                    color: 'var(--sidebar-muted)', cursor: 'pointer',
-                                                    padding: '2px 4px', borderRadius: '4px',
-                                                    fontSize: '0.75rem', opacity: 0,
-                                                    transition: 'opacity 0.15s',
-                                                }}
-                                                className="session-rename-btn"
-                                            >✏️</button>
+                                            <div className="session-action-btns">
+                                                <button
+                                                    onClick={e => startRename(s, e)}
+                                                    title="Rename"
+                                                    className="session-item-btn"
+                                                >✏️</button>
+                                                <button
+                                                    onClick={e => handleDeleteSession(s.session_id, e)}
+                                                    title="Delete"
+                                                    className="session-item-btn delete-btn"
+                                                >🗑️</button>
+                                            </div>
                                         </div>
                                     )}
                                     <div className="session-date">
@@ -382,74 +403,76 @@ export default function ChatView() {
 
             {/* ── Main chat area ── */}
             <div className="chat-container">
-                <div className="chat-messages">
-                    {!loadingHistory && messages.length === 0 && (
-                        <div className="empty-state">
-                            {isConnectionRequired ? (
-                                <>
-                                    <div className="empty-icon">🗄️</div>
-                                    <h2>{connections.length > 0 ? 'No approved connections' : 'No connections yet'}</h2>
-                                    <p>{connections.length > 0
-                                        ? 'Your connections are pending admin approval. Check back soon.'
-                                        : 'Add a database connection to let the AI agent query your data.'}</p>
-                                    <button className="btn-connect-empty" onClick={() => navigate('/dashboard')}>
-                                        Go to Connections
-                                    </button>
-                                </>
-                            ) : (
-                                <>
-                                    <div className="empty-icon">✨</div>
-                                    <h2>How can I help you?</h2>
-                                    <p>Ask me anything about your database — queries, analysis, or schema exploration.</p>
-                                    <div className="suggestions">
-                                        {suggestions.map(s => (
-                                            <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>{s}</button>
-                                        ))}
-                                    </div>
-                                </>
-                            )}
-                        </div>
-                    )}
+                <div className="chat-thread-focus">
+                    <div className="chat-messages">
+                        {!loadingHistory && messages.length === 0 && (
+                            <div className="empty-state">
+                                {isConnectionRequired ? (
+                                    <>
+                                        <div className="empty-icon">🗄️</div>
+                                        <h2>{connections.length > 0 ? 'No approved connections' : 'No connections yet'}</h2>
+                                        <p>{connections.length > 0
+                                            ? 'Your connections are pending admin approval. Check back soon.'
+                                            : 'Add a database connection to let the AI agent query your data.'}</p>
+                                        <button className="btn-connect-empty" onClick={() => navigate('/dashboard')}>
+                                            Go to Connections
+                                        </button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="empty-icon">✨</div>
+                                        <h2>How can I help you?</h2>
+                                        <p>Ask me anything about your database — queries, analysis, or schema exploration.</p>
+                                        <div className="suggestions">
+                                            {suggestions.map(s => (
+                                                <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>{s}</button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
 
-                    {loadingHistory && (
-                        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                            <LoadingDots />
-                        </div>
-                    )}
+                        {loadingHistory && (
+                            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                                <LoadingDots />
+                            </div>
+                        )}
 
-                    {messages.map((msg, i) => (
-                        <div key={i}>
-                            <MessageBubble message={msg} onSave={handleSaveQueryInitiate} />
-                            {msg.multiDb && <MultiDBResults payload={msg.multiDb} />}
-                        </div>
-                    ))}
+                        {messages.map((msg, i) => (
+                            <div key={i}>
+                                <MessageBubble message={msg} onSave={handleSaveQueryInitiate} />
+                                {msg.multiDb && <MultiDBResults payload={msg.multiDb} />}
+                            </div>
+                        ))}
 
-                    {loading && (
-                        <div className="bubble bubble-assistant">
-                            <div className="bubble-avatar">AI</div>
-                            <div className="bubble-content"><LoadingDots /></div>
-                        </div>
-                    )}
+                        {loading && (
+                            <div className="bubble bubble-assistant">
+                                <div className="bubble-avatar">AI</div>
+                                <div className="bubble-content"><LoadingDots /></div>
+                            </div>
+                        )}
 
-                    <div ref={bottomRef} />
-                </div>
+                        <div ref={bottomRef} />
+                    </div>
 
-                <form className="chat-input-bar" onSubmit={handleSubmit}>
-                    <textarea
-                        className="chat-textarea"
-                        placeholder={isConnectionRequired ? 'Connect a database first…' : 'Ask about your data…'}
-                        value={input}
-                        onChange={e => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        rows={1}
-                        disabled={loading || loadingHistory || isConnectionRequired}
-                    />
-                    <button type="submit" className="btn-send"
+                    <form className="chat-input-bar" onSubmit={handleSubmit}>
+                        <textarea
+                            className="chat-textarea"
+                            placeholder={isConnectionRequired ? 'Connect a database first…' : 'Ask about your data…'}
+                            value={input}
+                            onChange={e => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            rows={1}
+                            disabled={loading || loadingHistory || isConnectionRequired}
+                        />
+                        <button type="submit" className="btn-send"
                             disabled={!input.trim() || loading || loadingHistory || isConnectionRequired}
                             aria-label="Send">
-                        ↑
-                    </button>
-                </form>
+                            ↑
+                        </button>
+                    </form>
+                </div>
             </div>
 
             {/* Save Query Modal */}
@@ -462,7 +485,7 @@ export default function ChatView() {
                         <div style={{ margin: '1.5rem 0' }}>
                             <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 500 }}>Query Title</label>
                             <input type="text" className="input-field" value={saveTitle}
-                                   onChange={e => setSaveTitle(e.target.value)} placeholder="Enter title…" autoFocus />
+                                onChange={e => setSaveTitle(e.target.value)} placeholder="Enter title…" autoFocus />
                         </div>
                         <div className="modal-actions">
                             <button className="btn-accent" onClick={confirmSaveQuery} disabled={isSaving || !saveTitle.trim()}>
