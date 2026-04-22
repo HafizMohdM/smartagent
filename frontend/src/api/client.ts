@@ -243,10 +243,16 @@ export async function getChatSession(session_id: string): Promise<ChatSessionDet
   return request<ChatSessionDetailsResponse>(`/api/chat-sessions/${session_id}`);
 }
 
-export async function renameChatSession(session_id: string, session_name: string): Promise<void> {
-  await request(`/api/chat-sessions/${session_id}`, {
+export async function renameChatSession(sessionId: string, newName: string): Promise<any> {
+  return request(`/api/chat-sessions/${sessionId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ session_name }),
+    body: JSON.stringify({ session_name: newName }),
+  });
+}
+
+export async function deleteChatSession(sessionId: string): Promise<any> {
+  return request(`/api/chat-sessions/${sessionId}`, {
+    method: 'DELETE',
   });
 }
 
@@ -385,11 +391,9 @@ export async function getSavedQueryPreview(id: string): Promise<SavedQueryItem> 
   return request<SavedQueryItem>(`/api/queries/${id}/preview`);
 }
 
+/** Fetch Saved Query metadata only. */
 export async function getSavedQuery(id: string): Promise<SavedQueryItem> {
-  // Alias or direct fetch if we don't want to execute. 
-  // However, since the requirements say "execute on load", we keep using preview for now 
-  // or add a simple getter. Let's add a proper preview/execution one.
-  return request<SavedQueryItem>(`/api/queries/${id}/preview`);
+  return request<SavedQueryItem>(`/api/queries/${id}`);
 }
 
 export interface SavedQueryUpdateRequest {
@@ -421,6 +425,26 @@ export async function createSavedQuery(data: SavedQueryCreateRequest): Promise<S
     body: JSON.stringify(data),
   });
 }
+
+export interface SQLDataContract {
+  rows: any[];
+  columns: string[];
+  meta: {
+    row_count: number;
+    execution_time_ms: number;
+  };
+}
+
+/** 
+ * Standardized execution API.
+ * Requirement #6: Request { sql, connection_ids }
+ */
+export async function executeQuery(sql: string, connectionIds: string[]): Promise<SQLDataContract> {
+  return request<SQLDataContract>('/api/queries/execute', {
+    method: 'POST',
+    body: JSON.stringify({ sql, connection_ids: connectionIds }),
+  });
+}
 // ── Reports ───────────────────────────────────────────────────────
 
 export interface ReportItem {
@@ -443,15 +467,13 @@ export interface ReportItem {
 
 export interface ReportDataResponse {
   report_id: string;
-  successful_data: any[];
-  failed_sources: { id: string; database_name?: string; error: string }[];
+  results: SQLDataContract;
   chart_type: string;
   chart_config: any;
-  row_count: number;
-  execution_time_ms: number;
   cache_status?: string;
   request_id?: string;
 }
+
 
 export async function getReports(): Promise<ReportItem[]> {
   return request<ReportItem[]>('/api/reports');

@@ -83,6 +83,23 @@ class DBConnectionResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# ── SQL Data Contract ───────────────────────────────────────────────
+
+class SQLDataContract(BaseModel):
+    """
+    Strict API-level contract for all SQL query results.
+    Enforces rows, columns, and meta structure.
+    """
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: List[str] = Field(default_factory=list)
+    meta: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "row_count": 0,
+            "execution_time_ms": 0,
+            "version": "v1"
+        }
+    )
+
 # ── Saved Queries ───────────────────────────────────────────────────
 
 class QueryExecutionResponse(BaseModel):
@@ -97,6 +114,9 @@ class QueryExecutionResponse(BaseModel):
     execution_time_ms: Optional[int] = None
     row_count: Optional[int] = None
     created_at: datetime
+    
+    # Optional strict result data for detail views
+    result: Optional[SQLDataContract] = None
 
     class Config:
         from_attributes = True
@@ -107,11 +127,13 @@ class SavedQueryResponse(BaseModel):
     username: str
     title: str
     query_text: str
+    generated_sql: str
+    connection_ids: List[UUID] = []
     created_at: datetime
     executions: List[QueryExecutionResponse] = []
     
-    # NEW fields for dynamic execution (removed static result_json from executions)
-    results: Optional[List[Any]] = None
+    # NEW fields for dynamic execution
+    results: Optional[List[SQLDataContract]] = None
     failed_sources: Optional[List[Dict[str, Any]]] = None
     execution_stats: Optional[Dict[str, Any]] = None
 
@@ -126,7 +148,8 @@ class ChatResponse(BaseModel):
     response: str
     summary: Optional[str] = None
     sql: Optional[str] = None
-    preview_rows: Optional[List[Any]] = None
+    # Strictly enforced result structure
+    results: Optional[SQLDataContract] = None
     chart: Optional[Dict[str, Any]] = None
     tool_used: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -139,11 +162,13 @@ class ChatMessageItemResponse(BaseModel):
     role: str
     message_text: str
     generated_sql: Optional[str] = None
-    query_result_snapshot: Optional[Any] = None
+    # Strictly enforced result snapshot
+    query_result_snapshot: Optional[SQLDataContract] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
 
 
 class ChatSessionMetaResponse(BaseModel):

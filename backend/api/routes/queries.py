@@ -11,21 +11,21 @@ from typing import List
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.api.models.requests import SavedQueryCreateRequest, SavedQueryUpdateRequest
-from backend.api.models.responses import SavedQueryResponse, StatusResponse
+from backend.api.models.requests import SavedQueryCreateRequest, SavedQueryUpdateRequest, ExecuteQueryRequest
+from backend.api.models.responses import SavedQueryResponse, StatusResponse, SQLDataContract
 from backend.data.pool.session import get_db
 from backend.security.jwt_auth import get_current_user
 from backend.api.middleware.rbac import is_admin
 from backend.models.user import User
-from backend.data.executor.crud import save_query, list_saved_queries, delete_query, update_query
+from backend.data.executor.crud import save_query, list_saved_queries, delete_query, update_query, get_query
 from backend.agent.utils.sql_parser import SQLParser
 from backend.data.executor.orchestrator import run_parallel_sql
 from backend.data.executor.generator import SQLGenerator
 
-router = APIRouter(prefix="/api/queries", tags=["Saved Queries"])
+router = APIRouter(prefix="/api", tags=["Saved Queries"])
 
 
-@router.post("", response_model=SavedQueryResponse)
+@router.post("/queries", response_model=SavedQueryResponse)
 async def create_saved_query(
     request: SavedQueryCreateRequest,
     db: AsyncSession = Depends(get_db),
@@ -87,7 +87,7 @@ async def create_saved_query(
 
 
 
-@router.get("", response_model=List[SavedQueryResponse])
+@router.get("/queries", response_model=List[SavedQueryResponse])
 async def get_user_saved_queries(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -102,7 +102,7 @@ async def get_user_saved_queries(
     return queries
 
 
-@router.delete("/{query_id}", response_model=StatusResponse)
+@router.delete("/queries/{query_id}", response_model=StatusResponse)
 async def remove_saved_query(
     query_id: str,
     db: AsyncSession = Depends(get_db),
@@ -123,7 +123,7 @@ async def remove_saved_query(
         )
     return StatusResponse(status="success", message="Query deleted successfully")
 
-@router.patch("/{query_id}", response_model=SavedQueryResponse)
+@router.patch("/queries/{query_id}", response_model=SavedQueryResponse)
 async def update_saved_query(
     query_id: str,
     request: SavedQueryUpdateRequest,
@@ -144,98 +144,114 @@ async def update_saved_query(
         )
     return updated
 
-@router.get("/{query_id}/preview", response_model=SavedQueryResponse)
+
+@router.get("/queries/{query_id}/preview", response_model=SavedQueryResponse)
 async def preview_saved_query(
     query_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Execute a saved query live against its associated databases.
-    Implements 'Dynamic Execution' source-of-truth concept.
+    Legacy execution route. Calls standardized execution logic.
     """
-    from backend.data.executor.crud import get_query
     q = await get_query(db, query_id, str(current_user.id))
     if not q:
         raise HTTPException(status_code=404, detail="Saved query not found")
     
-    # 1. SQL Repair Logic (Concept: If source of truth is NOT executable, reconstruct it)
-    if not SQLParser.is_executable(q.generated_sql):
-        logger.info(f"Repairing non-executable SQL for query {q.id} ('{q.title}')")
+    # Standardized execution
+    from backend.models.db_connection import DBConnection
+    execution_result = await run_parallel_sql(
+        connections=q.connections,
+        sql=q.generated_sql,
+        trace_context={"request_id": f"preview_{q.id}"}
+    )
+    
+    q.results = [execution_result]
+    q.failed_sources = execution_result.get("failed_sources", [])
+    q.execution_stats = {
+        "time_ms": execution_result.get("execution_time_ms"),
+        "total_rows": execution_result.get("row_count")
+    }
         
-        # 1.1 Hierarchical Repair - Scan history for a consistent fallback
-        # If all successful executions used the same SQL, it's a safe repair.
-        # If they used different SQL (Multi-DB scenario), we better use AI to regenerate a proper Multi-DB query.
-        distinct_sqls = {e.sql for e in q.executions if e.sql and SQLParser.is_executable(e.sql) and e.status == "success"}
-        
-        if len(distinct_sqls) == 1:
-            q.generated_sql = list(distinct_sqls)[0]
-            logger.info(f"Found consistent historical fallback SQL for {q.id}")
-            await db.commit()
-        else:
-            if len(distinct_sqls) > 1:
-                logger.info(f"Inconsistent history for {q.id} ({len(distinct_sqls)} SQLs). Forcing AI repair.")
-            
-            # 1.2 Fallback to AI Generation
-            generator = SQLGenerator()
-            # Need schema for generation - use first connection
-            if q.connections:
-                from backend.data.connector.connector import DatabaseConnector
-                from backend.security.encryption import decrypt_password
-                
-                conn = q.connections[0]
-                connector = DatabaseConnector()
-                try:
-                    plaintext = decrypt_password(conn.encrypted_password)
-                    await connector.connect(
-                        host=conn.host, port=conn.port,
-                        database=conn.database_name,
-                        username=conn.username, password=plaintext,
-                        connection_id=str(conn.id)
-                    )
-                    schema = connector.get_schema()
-                    
-                    new_sql_raw = await generator.generate(
-                        user_query=q.query_text,
-                        schema=schema,
-                        connection_id=str(conn.id),
-                        db_name=conn.connection_name or conn.database_name,
-                        all_db_names=[c.connection_name for c in q.connections]
-                    )
-                    q.generated_sql = SQLParser.extract_sql(new_sql_raw) or new_sql_raw
-                    # Save the repair permanently
-                    await db.commit()
-                    logger.info(f"Successfully repaired SQL via AI for {q.id}")
-                except Exception as e:
-                    logger.error(f"Failed to repair SQL for {q.id}: {e}")
-                finally:
-                    await connector.disconnect()
-
-    # 2. Dynamic Execution
-    if q.generated_sql and q.connections:
-        try:
-            execution_result = await run_parallel_sql(
-                connections=q.connections,
-                sql=q.generated_sql,
-                request_id=f"preview_{q.id}"
-            )
-            
-            # Map results to response
-            q.results = execution_result.get("data", [])
-            q.failed_sources = execution_result.get("failed_sources", [])
-            q.execution_stats = {
-                "time_ms": execution_result.get("execution_time_ms"),
-                "total_rows": execution_result.get("row_count")
-            }
-        except Exception as e:
-            logger.error(f"Dynamic execution failed for query {q.id}: {e}")
-            # We still return the query object, but with empty results
-            
-    # 3. Explicitly construct response to ensure transient fields (results) are serialized
-    # Note: Using from_orm(q) might skip dynamically assigned attributes that aren't columns.
     response = SavedQueryResponse.from_orm(q)
     response.results = getattr(q, "results", [])
     response.failed_sources = getattr(q, "failed_sources", [])
     response.execution_stats = getattr(q, "execution_stats", None)
     
     return response
+
+
+@router.get("/queries/{query_id}", response_model=SavedQueryResponse)
+@router.get("/saved-query/{query_id}", response_model=SavedQueryResponse)
+async def get_saved_query_detail(
+    query_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fetch Saved Query metadata.
+    Requirement #4: Response MUST include id, title, generated_sql, connection_ids
+    """
+    q = await get_query(db, query_id, str(current_user.id))
+    if not q:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    
+    if not q.generated_sql:
+        raise HTTPException(status_code=500, detail="Data corruption: generated_sql is missing for this query")
+
+    return SavedQueryResponse.from_orm(q)
+
+
+@router.post("/queries/execute", response_model=SQLDataContract)
+@router.post("/execute-query", response_model=SQLDataContract)
+async def execute_query_api(
+    request: ExecuteQueryRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Standardized execution API.
+    Requirement #6: Request { sql, connection_ids } -> Response { rows, columns, meta }
+    Requirement #9: Logging { query_id, sql, execution_status, execution_time }
+    """
+    from backend.data.connector.crud import get_connection
+    from backend.models.db_connection import ConnectionStatus
+    
+    # 1. Resolve & Validate Connections
+    validated_conns = []
+    for cid in request.connection_ids:
+        conn = await get_connection(db, cid, str(current_user.tenant_id))
+        if not conn:
+            raise HTTPException(status_code=404, detail=f"Connection {cid} not found")
+        if conn.status != ConnectionStatus.APPROVED:
+            raise HTTPException(status_code=403, detail=f"Connection {conn.connection_name} is not approved")
+        validated_conns.append(conn)
+
+    # 2. Execute
+    try:
+        result_dict = await run_parallel_sql(
+            connections=validated_conns,
+            sql=request.sql,
+            trace_context={"user_id": str(current_user.id)}
+        )
+        
+        # 3. Logging (Requirement #9)
+        logger.info(
+            f"[EXECUTION] query_id=raw, sql={request.sql[:100]}..., "
+            f"status=success, time={result_dict.get('execution_time_ms')}ms"
+        )
+        
+        # 4. Format into strict SQLDataContract
+        res_meta = result_dict.get("meta", {})
+        return SQLDataContract(
+            rows=result_dict.get("rows", []),
+            columns=result_dict.get("columns", []),
+            meta={
+                "row_count": res_meta.get("row_count", 0),
+                "execution_time_ms": res_meta.get("execution_time_ms", 0),
+                "version": "v1"
+            }
+        )
+    except Exception as e:
+        logger.error(f"[EXECUTION] query_id=raw, status=failed, error={str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database execution failed: {str(e)}")

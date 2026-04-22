@@ -13,7 +13,7 @@ export default function MessageBubble({ message, onSave }: { message: Message, o
     const effectiveSql = message.sql || message.metadata?.generated_sql || message.metadata?.sql;
     const isMultiDb = !!message.multiDb || message.tool_used === 'multi_db_query';
     const canSave = !isUser && (!!effectiveSql || !!message.chart || message.tool_used === 'database_query' || isMultiDb);
-    
+
     // Extract table data if available
     const tableData = message.metadata?.data;
     const hasTable = !isUser && tableData && Array.isArray(tableData.rows) && tableData.rows.length > 0;
@@ -86,10 +86,10 @@ export default function MessageBubble({ message, onSave }: { message: Message, o
                         <span className="metadata-badge">📊 {message.metadata.row_count} rows</span>
                     )}
                     <span className="bubble-time">{time}</span>
-                    
+
                     {canSave && onSave && (
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onSave(message); }} 
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onSave(message); }}
                             className="btn-save-query active"
                             title="Save this query to your library"
                         >

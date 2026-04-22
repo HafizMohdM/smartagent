@@ -34,28 +34,14 @@ async def save_query(
 ) -> Query:
     from backend.models.db_connection import DBConnection
 
-    # 1. Extract SQL as the source of truth for the Query object
-    # We prioritize actual executable SQL over clarifications/narratives
-    pure_sql = SQLParser.extract_sql(query)
+    # 1. SQL is the absolute source of truth. It MUST be provided in the request.
+    # We no longer allow saving without a valid SQL definition.
+    extracted_sql = SQLParser.extract_sql(query)
     
-    # 2. Fallback: If AI response has no SQL, try to pull it from the snapshot (the code that actually RAN)
-    if not SQLParser.is_executable(pure_sql):
-        # Check Multi-DB snapshot
-        multi_db = query_result_snapshot.get("multi_db") if isinstance(query_result_snapshot, dict) else None
-        if multi_db and "results" in multi_db:
-            for row in multi_db["results"]:
-                if row.get("sql") and SQLParser.is_executable(row.get("sql")):
-                    pure_sql = row["sql"]
-                    break
-        
-        # Check Single-DB snapshot (if still not found)
-        if not SQLParser.is_executable(pure_sql) and isinstance(query_result_snapshot, dict):
-            if query_result_snapshot.get("sql") and SQLParser.is_executable(query_result_snapshot["sql"]):
-                pure_sql = query_result_snapshot["sql"]
-                
-    # Final fallback to raw query text if nothing else found
-    if not pure_sql:
-        pure_sql = query.strip()
+    if not extracted_sql or not extracted_sql.strip():
+        raise ValueError("A valid SQL query is required to save.")
+
+    final_sql = extracted_sql
 
     # 1. Establish connections association (Fetch first to avoid async lazy loading)
     target_ids = connection_ids if connection_ids else ([connection_id] if connection_id else [])
@@ -72,7 +58,7 @@ async def save_query(
         tenant_id=tenant_id,
         title=title,
         query_text=natural_language_query,
-        generated_sql=pure_sql, # [NEW] Persistent SQL definition
+        generated_sql=final_sql, # [NEW] Persistent SQL definition
         username=username,
         connections=connections
     )
@@ -108,7 +94,7 @@ async def save_query(
         q_exec = QueryExecution(
             query_id=q.id,
             database_name=database_name or "unknown",
-            sql=pure_sql,
+            sql=final_sql,
             status=status,
             # result_json REMOVED
             error=query_result_snapshot.get("error") if isinstance(query_result_snapshot, dict) else None,

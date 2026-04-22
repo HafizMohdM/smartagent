@@ -118,35 +118,18 @@ async def execute_report_query(
             connections=connections,
             sql=sql,
             timeout=settings.GLOBAL_QUERY_TIMEOUT,
-            request_id=request_id
+            trace_context={"request_id": request_id}
         )
-        
-        final_rows = execution_result["data"]
-        failed_sources = execution_result["failed_sources"]
-        t_duration_ms = execution_result["execution_time_ms"]
 
-        # Apply Row Limit
-        final_rows = final_rows[offset : offset + limit]
         
-        # 4. Enforce Response Size Limit
-        serialized = json.dumps(final_rows)
-        size_kb = len(serialized.encode('utf-8')) / 1024
-        
-        full_response = {
-            "report_id": str(report.id),
-            "successful_data": final_rows,
-            "failed_sources": failed_sources,
-            "chart_type": report.chart_type,
-            "chart_config": report.chart_config,
-            "row_count": len(final_rows),
-            "execution_time_ms": t_duration_ms,
-            "cache_status": "MISS",
-            "request_id": request_id,
-            "payload_size_kb": round(size_kb, 1)
-        }
+        # execution_result is already a strict contract {rows, columns, meta}
+        # Apply Row Limit & Offset
+        execution_result["rows"] = execution_result["rows"][offset : offset + limit]
+        execution_result["meta"]["row_count"] = len(execution_result["rows"])
+        execution_result["meta"]["cache_status"] = "MISS"
 
-        await cache.set(cache_key, full_response, ttl=30)
-        return full_response
+        await cache.set(cache_key, execution_result, ttl=30)
+        return execution_result
 
     finally:
         if lock_acquired:

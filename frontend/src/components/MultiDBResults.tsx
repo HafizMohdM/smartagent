@@ -72,8 +72,8 @@ export default function MultiDBResults({ payload }: Props) {
       <div className="mdb-tabs">
         {tabs.map(t => (
           <button key={t.key}
-                  className={`mdb-tab ${activeTab === t.key ? 'active' : ''}`}
-                  onClick={() => setActiveTab(t.key)}>
+            className={`mdb-tab ${activeTab === t.key ? 'active' : ''}`}
+            onClick={() => setActiveTab(t.key)}>
             {t.label}
           </button>
         ))}

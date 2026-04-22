@@ -28,8 +28,11 @@ _SKIP_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Metadata fields injected by the pipeline — never use as chart axes
+_METADATA_FIELDS = {'_source_db', '_row_num', '_rank', '_id'}
+
 def _is_skip_column(col: str) -> bool:
-    return bool(_SKIP_PATTERNS.search(col)) or col.lower().endswith('_id')
+    return bool(_SKIP_PATTERNS.search(col)) or col.lower().endswith('_id') or col.lower() in _METADATA_FIELDS
 
 
 def _is_numeric_col(col: str, rows: List[Dict[str, Any]]) -> bool:
@@ -197,3 +200,31 @@ class ChartGenerator:
         if re.match(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", val, re.I):
             return True
         return False
+
+
+def validate_chart_data(columns: List[str], rows: List[Dict[str, Any]], chart_type: str = "bar") -> Dict[str, Any]:
+    """
+    Validate and enforce chart-safe data using ChartSafeEnforcer.
+    Returns a dict with validated chart config or table fallback.
+    
+    This is the bridge between the existing chart_generator and the new
+    ChartSafeEnforcer. Call this before finalizing chart output.
+    """
+    from backend.data.executor.chart_enforcer import ChartSafeEnforcer
+    
+    enforcer = ChartSafeEnforcer()
+    result = enforcer.enforce(rows, columns, chart_type)
+    
+    config = {
+        "type": result.chart_type,
+        "x_axis": result.x_axis,
+        "y_axis": result.y_axis,
+        "data": result.data,
+        "aggregation_applied": result.aggregation_applied,
+    }
+    
+    if result.explanation:
+        config["explanation"] = result.explanation
+        config["original_type"] = result.original_type
+    
+    return config

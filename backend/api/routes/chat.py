@@ -11,7 +11,7 @@ Key changes from previous version:
 """
 
 import logging
-from typing import List
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,9 +39,19 @@ from backend.memory.summary.chat import (
 )
 from backend.security.encryption import decrypt_password
 
+from backend.agent.tools.base import ToolResult
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Chat"])
+
+def result_to_tool_result(res: Dict[str, Any]) -> ToolResult:
+    """Helper to convert a strict contract dict to a ToolResult object."""
+    return ToolResult(
+        success=True,
+        data=res,
+        metadata=res.get("meta", {})
+    )
 
 
 # ── Global chat session list ───────────────────────────────────────────────────
@@ -148,6 +158,24 @@ async def rename_chat_session(
         raise HTTPException(status_code=500, detail="Failed to update session name")
         
     return {"status": "success", "session_id": session_id, "new_name": request.session_name}
+
+
+@router.delete("/chat-sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a chat session."""
+    tenant_id = str(current_user.tenant_id)
+    user_id = str(current_user.id)
+    
+    from backend.memory.summary.chat import delete_session
+    success = await delete_session(db, session_id, tenant_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
+        
+    return {"status": "success", "session_id": session_id}
 
 
 # ── Send message ───────────────────────────────────────────────────────────────
@@ -285,15 +313,12 @@ async def send_chat_message(
                 await session_mgr.delete_session(runtime_session_id)
 
             result = {
-                "response":     multi_result.get("summary", ""),
-                "summary":      multi_result.get("summary", ""),
+                "response":     multi_result.get("meta", {}).get("summary") or "Multi-database query completed.",
                 "sql":          None,
-                "preview_rows": [],
-                "chart":        {},
+                "results":      multi_result,  # This is the strict contract dict
                 "tool_used":    "multi_db_query",
                 "plan":         {},
-                "tool_result":  None,
-                "multi_db":     multi_result,   # full structured payload
+                "tool_result":  result_to_tool_result(multi_result),
             }
 
         else:
@@ -338,9 +363,12 @@ async def send_chat_message(
         )
 
     # ── Store agent response ───────────────────────────────────────────────────
-    snapshot = result.get("tool_result") or {}
-    if result.get("multi_db"):
-        snapshot = {"multi_db": result["multi_db"]}
+    # The snapshot must be a strict SQLDataContract dict
+    snapshot = None
+    if result.get("results"):
+        snapshot = result["results"]
+    elif result.get("tool_result") and hasattr(result["tool_result"], "data"):
+        snapshot = result["tool_result"].data
 
     agent_msg = await create_message(
         db=db,
@@ -400,7 +428,7 @@ async def chat(request: ChatRequest, req: Request):
             response=result["response"],
             summary=result.get("summary"),
             sql=result.get("sql"),
-            preview_rows=result.get("preview_rows"),
+            results=result.get("tool_result").data if result.get("tool_result") and hasattr(result.get("tool_result"), "data") else None,
             chart=result.get("chart"),
             tool_used=result.get("tool_used"),
             metadata={**result.get("metadata", {}), "plan": result.get("plan", {})},

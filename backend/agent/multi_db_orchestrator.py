@@ -39,74 +39,74 @@ class MultiDBQueryOrchestrator:
     async def run(
         self,
         query: str,
-        connections: List[Any],          # list of DBConnection ORM objects
+        connections: List[Any],
         history: Optional[List[Dict]] = None,
+        trace_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Args:
-            query:       Natural-language user query.
-            connections: Validated DBConnection ORM objects (already ownership-checked).
-            history:     Conversation history (passed to SQL generator for context).
-
-        Returns:
-            {
-              "results": [
-                {"database": "<name>", "connection_id": "...", "data": [...], "sql": "...", "error": null},
-                ...
-              ],
-              "merged": True/False,
-              "summary": "<text>",
-            }
+        Execute a NL query against multiple databases in parallel and return the strict contract.
         """
+        ctx = trace_context or {}
         all_db_names = [conn.connection_name for conn in connections]
         tasks = [
-            self._query_single_db(query, conn, all_db_names)
+            self._query_single_db(query, conn, all_db_names, ctx)
             for conn in connections
         ]
+        # Each res is now a strict contract dict
         raw_results: List[Dict] = await asyncio.gather(*tasks, return_exceptions=False)
 
-        # Separate successes from failures
-        successes = [r for r in raw_results if not r.get("error")]
-        failures  = [r for r in raw_results if r.get("error")]
+        success_results = [r for r in raw_results if not r["meta"].get("error")]
+        failed_sources = [
+            {
+                "database_id": r["meta"].get("connection_id"),
+                "database_name": r["meta"].get("database_name"),
+                "error": r["meta"].get("error")
+            }
+            for r in raw_results if r["meta"].get("error")
+        ]
 
-        for f in failures:
-            logger.warning(f"[MultiDB] DB '{f['database']}' failed: {f['error']}")
+        # ── Deterministic Merge ──────────────────────────────────────
+        all_rows = []
+        for r in success_results:
+            all_rows.extend(r["rows"])
 
-        # Attempt merge if all successful results share the same columns
-        merged = False
-        if len(successes) > 1:
-            col_sets = [frozenset(r["columns"]) for r in successes if r.get("columns")]
-            if len(set(col_sets)) == 1:
-                merged_rows = []
-                for r in successes:
-                    for row in r.get("data", []):
-                        merged_rows.append({**row, "_source_db": r["database"]})
-                merged = True
-                return {
-                    "results": raw_results,
-                    "merged": True,
-                    "merged_rows": merged_rows,
-                    "merged_columns": list(col_sets.pop()) + ["_source_db"],
-                    "summary": self._build_summary(raw_results, merged=True),
-                }
+        from backend.data.executor.orchestrator import _normalize_and_merge
+        from backend.data.executor.contract import validate_db_result
+        
+        merged_rows = await _normalize_and_merge(all_rows)
+        # Unique sorted union of columns
+        all_cols_set = set()
+        for r in success_results:
+            all_cols_set.update(r["columns"])
+        
+        merged_columns = sorted(list(all_cols_set))
 
-        return {
-            "results": raw_results,
-            "merged": False,
-            "summary": self._build_summary(raw_results, merged=False),
+        execution_time_total = int((time.monotonic() - time.monotonic()) * 1000) # Placeholder
+        
+        result = {
+            "rows": merged_rows,
+            "columns": merged_columns,
+            "meta": {
+                "row_count": len(merged_rows),
+                "execution_time_ms": 0, # Calculated at end
+                "sql": query,
+                "failed_sources": failed_sources,
+                "version": "v1",
+                "merged": len(success_results) > 0,
+                "individual_results": raw_results # Keep for debug/UI detail if needed
+            }
         }
+        
+        return validate_db_result(result, source="multi_db_orchestrator", trace_context=ctx)
 
-    async def _query_single_db(self, query: str, conn: Any, all_db_names: List[str]) -> Dict[str, Any]:
-        base = {
-            "database":      conn.connection_name,
-            "connection_id": str(conn.id),
-            "data":          [],
-            "columns":       [],
-            "sql":           None,
-            "error":         None,
-            "row_count":     0,
-            "execution_ms":  0,
-        }
+    async def _query_single_db(self, query: str, conn: Any, all_db_names: List[str], trace_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Query a single DB and return the strict contract."""
+        db_id = str(conn.id)
+        db_name = conn.connection_name
+        ctx = {**trace_context, "connection_id": db_id, "database_name": db_name}
+        
+        from backend.data.executor.contract import get_error_fallback, validate_db_result
+        
         t0 = time.monotonic()
         connector = DatabaseConnector()
         try:
@@ -116,87 +116,56 @@ class MultiDBQueryOrchestrator:
                     host=conn.host, port=conn.port,
                     database=conn.database_name,
                     username=conn.username, password=plaintext,
-                    connection_id=str(conn.id),
+                    connection_id=db_id,
                 ),
                 timeout=_PER_DB_TIMEOUT,
             )
 
             schema = connector.get_schema()
-            normalized = normalize_query(query)
 
-            # Generate SQL
-            sql_raw = await asyncio.wait_for(
-                self._generator.generate(
-                    user_query=normalized,
+            # ── Delegate to centralized pipeline ─────────────────────────
+            from backend.data.executor.sql_pipeline import SchemaAwareSQLPipeline
+
+            pipeline = SchemaAwareSQLPipeline()
+            result = await asyncio.wait_for(
+                pipeline.run(
+                    query=query,
                     schema=schema,
-                    connection_id=str(conn.id),
-                    db_name=conn.connection_name,
+                    connector=connector,
+                    connection_id=db_id,
+                    db_name=db_name,
                     all_db_names=all_db_names,
+                    trace_context=ctx,
                 ),
                 timeout=_PER_DB_TIMEOUT,
             )
 
-            # Handle Intent-Based Outputs (METADATA, LOOKUP, CLARIFICATION, ERROR)
-            upper_sql = sql_raw.lstrip().upper()
-            if upper_sql.startswith("TYPE: METADATA") or upper_sql.startswith("TYPE: LOOKUP"):
-                parts = sql_raw.split("DATA:")
-                if len(parts) > 1:
-                    raw_items = parts[1].strip().split('\n')
-                    items = [item.strip("*- \t") for item in raw_items if item.strip()]
-                    base["data"] = [{"Result": item} for item in items]
-                    base["columns"] = ["Result"]
-                    base["row_count"] = len(items)
-                    base["sql"] = sql_raw  # Keep original output
-                return base
-                
-            if upper_sql.startswith("TYPE: ERROR") or upper_sql.startswith("TYPE: CLARIFICATION"):
-                parts = sql_raw.split("MESSAGE:") if "MESSAGE:" in sql_raw else sql_raw.split("DATA:")
-                msg = parts[1].strip() if len(parts) > 1 else sql_raw.split('\n', 1)[-1].strip()
-                base["error"] = msg
-                return base
+            # pipeline.run returns a PipelineResult, to_multi_db_format() is now strict
+            pipeline_data = result.to_multi_db_format()
+            
+            # Inject source metadata into rows
+            for r in pipeline_data["rows"]:
+                r["_source_db"] = db_name
+            if "_source_db" not in pipeline_data["columns"]:
+                pipeline_data["columns"].append("_source_db")
 
-            pure_sql = SQLParser.extract_sql(sql_raw)
-            if not pure_sql:
-                base["error"] = f"Could not generate SQL for this database: {sql_raw[:200]}"
-                return base
-
-            # Validate
-            is_valid, reason = self._validator.validate(pure_sql)
-            if not is_valid:
-                base["error"] = f"SQL validation failed: {reason}"
-                base["sql"] = pure_sql
-                return base
-
-            base["sql"] = pure_sql
-
-            # Execute
-            executor = SQLExecutor(connector)
-            result = await asyncio.wait_for(
-                executor.execute(pure_sql),
-                timeout=_PER_DB_TIMEOUT,
-            )
-
-            rows    = result.get("rows", [])
-            columns = result.get("columns", [])
-            base.update({
-                "data":         rows,
-                "columns":      columns,
-                "row_count":    len(rows),
-                "execution_ms": int((time.monotonic() - t0) * 1000),
+            # Update meta with connection info
+            pipeline_data["meta"].update({
+                "connection_id": db_id,
+                "database_name": db_name,
+                "execution_time_ms": int((time.monotonic() - t0) * 1000)
             })
 
-        except asyncio.TimeoutError:
-            base["error"] = f"Query timed out after {_PER_DB_TIMEOUT}s"
-        except Exception as e:
-            logger.error(f"[MultiDB] Error on '{conn.connection_name}': {e}", exc_info=True)
-            base["error"] = str(e)
-        finally:
-            try:
-                await connector.disconnect()
-            except Exception:
-                pass
+            return validate_db_result(pipeline_data, source="multi_db_single", trace_context=ctx)
 
-        return base
+        except asyncio.TimeoutError:
+            return get_error_fallback(f"Query timed out after {_PER_DB_TIMEOUT}s", source="multi_db_single", trace_context=ctx)
+        except Exception as e:
+            logger.error(f"[MultiDB] Error on '{db_name}': {e}")
+            return get_error_fallback(str(e), source="multi_db_single", trace_context=ctx)
+        finally:
+            await connector.disconnect()
+
 
     @staticmethod
     def _build_summary(results: List[Dict], merged: bool) -> str:

@@ -39,39 +39,7 @@ Return a JSON object:
     "retry_reason": "reason to retry, if is_complete is false"
 }}
 
-When presenting query results, format them as readable tables or lists.
 Be concise but thorough. Return ONLY valid JSON."""
-
-
-def _summarize_result_for_llm(result: Dict[str, Any]) -> str:
-    """
-    Truncate the tool result so we don't send thousands of tokens to the LLM.
-    We only send the first 10 rows + summary metadata. The frontend still gets the full data.
-    """
-    if result.get("success") is False:
-        return json.dumps(result, default=str)
-    
-    data = result.get("data", {})
-    if not isinstance(data, dict) or "rows" not in data:
-        return json.dumps(result, default=str)
-    
-    # Take first 50 rows for the LLM (increased from 10 to support larger requests)
-    rows = data.get("rows", [])
-    truncated_rows = rows[:50]
-    
-    summary = {
-        "success": True,
-        "metadata": {
-            "row_count": data.get("row_count"),
-            "execution_time_ms": data.get("execution_time_ms"),
-            "truncated_by_db": data.get("truncated"),
-            "showing_for_llm": f"{len(truncated_rows)} out of {len(rows)} rows",
-        },
-        "columns": data.get("columns", []),
-        "sample_rows": truncated_rows
-    }
-    
-    return json.dumps(summary, default=str)
 
 
 async def evaluator_node(state: AgentState) -> Dict[str, Any]:
@@ -93,14 +61,19 @@ async def evaluator_node(state: AgentState) -> Dict[str, Any]:
     )
 
     # Prepare inputs for the evaluator
-    result_summary = _summarize_result_for_llm(tool_result)
+    # Use prepare_chat_preview to ensure we never bloat the token count
+    from backend.agent.utils.data_utils import prepare_chat_preview
+    preview = prepare_chat_preview(tool_result.get("data", {}))
+    
+    result_summary = json.dumps(preview, indent=2, default=str)
     
     messages = [
         SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
         HumanMessage(content=(
             f"User Query: {user_query}\n\n"
             f"Plan executed: {json.dumps(plan, indent=2)}\n\n"
-            f"Tool Result Summary:\n{result_summary}"
+            "NOTE: You are being given a PREVIEW snippet (Top 5 cols, 10 rows max).\n"
+            f"Tool Result Preview:\n{result_summary}"
         ))
     ]
 

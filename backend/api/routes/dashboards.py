@@ -195,6 +195,7 @@ async def get_widget_data(
         raise HTTPException(status_code=400, detail="Dashboard has no database connection")
 
     fake_report = SimpleNamespace(
+        id=w.id,
         query_id=w.query_id,
         connection_id=conn_id,
         chart_type=w.chart_type,
@@ -209,12 +210,17 @@ async def get_widget_data(
             cfg["y_axis"] = results["y_axis"]
         return ReportDataResponse(
             report_id=w.id,
-            data=results["rows"],
+            results={
+                "rows": results["rows"],
+                "columns": results["columns"],
+                "meta": results["meta"]
+            },
             chart_type=w.chart_type,
             chart_config=cfg,
-            row_count=results["row_count"],
-            execution_time_ms=int(results.get("execution_time_ms", 0)),
+            cache_status=results["meta"].get("cache_status", "MISS"),
+            request_id=results["meta"].get("request_id")
         )
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:

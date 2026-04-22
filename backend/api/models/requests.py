@@ -2,7 +2,7 @@
 Pydantic request models for all API endpoints.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import Optional, Any, List
 
 
@@ -80,10 +80,22 @@ class SavedQueryCreateRequest(BaseModel):
     connection_id: str = Field(..., description="Connection ID used")
     title: str = Field(..., description="Friendly name for the saved query")
     natural_language_query: str = Field(..., description="Original user question")
-    query: str = Field(..., description="The generated SQL")
+    query: str = Field(..., min_length=1, description="The generated SQL")
+
+    @validator("query")
+    def query_not_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("SQL definition cannot be empty or just whitespace")
+        return v.strip()
     query_result_snapshot: Optional[Any] = Field(default=None, description="JSON snapshot of query results")
     execution_time_ms: Optional[int] = Field(default=None, description="Execution time in milliseconds")
     row_count: Optional[int] = Field(default=None, description="Number of rows returned")
+
+
+class ExecuteQueryRequest(BaseModel):
+    """Payload to execute an arbitrary SQL query."""
+    sql: str = Field(..., min_length=1, description="The SQL query to execute")
+    connection_ids: List[str] = Field(..., min_length=1, description="List of connection IDs to run against")
 
 
 class SavedQueryUpdateRequest(BaseModel):

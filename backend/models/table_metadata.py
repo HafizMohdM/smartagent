@@ -21,6 +21,7 @@ class TableMetadataStore(Base):
     description = Column(Text, nullable=True)
     synonyms = Column(ARRAY(String), nullable=False, default=[])
     relationships = Column(JSONB, nullable=True) # Pre-calculated Foreign Key info
+    column_embeddings = Column(JSONB, nullable=True)  # {col_name: [float...]} — cached per-column embeddings
     
     embedding = Column(Vector(1536), nullable=False) # OpenAI text-embedding-3-small dimension
     

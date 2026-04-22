@@ -7,7 +7,7 @@ import 'react-resizable/css/styles.css';
 import {
   getDashboards, createDashboard, getDashboard, updateDashboard, deleteDashboard,
   addWidget, deleteWidget, saveLayout, getWidgetData,
-  getSavedQueries, getConnections,
+  getSavedQueries, getConnections, getSavedQueryPreview,
   type DashboardItem, type DashboardDetail, type WidgetItem, type SavedQueryItem,
   type ReportDataResponse, type DBConnectionItem,
 } from '../api/client';
@@ -59,40 +59,27 @@ function AddWidgetModal({ dashboardId, queries, onAdd, onClose }: AddWidgetModal
   const [saving, setSaving]       = useState(false);
   const [err, setErr]             = useState('');
 
-  // Load columns from snapshot when query changes
+  // Load columns from live preview when query changes
   useEffect(() => {
     if (!queryId) { setCols([]); return; }
-    const q = queries.find(q => q.id === queryId);
-    let rows: any[] = [];
-    if (q?.executions?.length) {
-       for (const exec of q.executions) {
-           if (exec.result_json) {
-               let s = exec.result_json;
-               if (typeof s === 'string') {
-                   try { s = JSON.parse(s); } catch (e) {}
-               }
-               
-               if (Array.isArray(s)) {
-                   rows = rows.concat(s);
-               } else if (s.multi_db) {
-                   if (s.multi_db.merged_rows && Array.isArray(s.multi_db.merged_rows)) {
-                       rows = rows.concat(s.multi_db.merged_rows);
-                   } else if (Array.isArray(s.multi_db.results)) {
-                       rows = rows.concat(s.multi_db.results.flatMap((r: any) => r.data || []));
-                   }
-               } else if (s.data && Array.isArray(s.data)) {
-                   rows = rows.concat(s.data);
-               } else if (s.data && s.data.rows && Array.isArray(s.data.rows)) {
-                   rows = rows.concat(s.data.rows);
-               } else if (s.rows && Array.isArray(s.rows)) {
-                   rows = rows.concat(s.rows);
-               }
-           }
-       }
-    }
-    setCols(rows.length ? Object.keys(rows[0]) : []);
+    
+    const fetchSchema = async () => {
+      try {
+        const preview = await getSavedQueryPreview(queryId);
+        if (preview.results && preview.results.length > 0) {
+          setCols(Object.keys(preview.results[0]));
+        } else {
+          setCols([]);
+        }
+      } catch (e) {
+        console.error("Failed to fetch query schema:", e);
+        setCols([]);
+      }
+    };
+
+    fetchSchema();
     setXAxis(''); setYAxis(''); setValCol('');
-  }, [queryId, queries]);
+  }, [queryId]);
 
   const axes = axesFor(chartType);
 
@@ -238,7 +225,7 @@ function LiveWidget({ widget, dashboardId, onDelete }:
             x_axis: cfg.chart_config?.x_axis,
             y_axis: cfg.chart_config?.y_axis,
             value_col: cfg.chart_config?.value_col,
-            data: cfg.data,
+            data: cfg.successful_data,
           }} />
         ) : null}
       </div>

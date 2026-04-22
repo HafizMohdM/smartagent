@@ -136,10 +136,10 @@ class AgentOrchestrator:
         logger.info(f"Running agent for session {session_id}: {query[:80]}...")
         result = await self._graph.ainvoke(initial_state)  # type: ignore
 
-        # Prioritize the human-friendly summary for the response
-        summary = result.get("summary")
+        # Prioritize the fully formatted response (Table + Summary)
         final_resp = result.get("final_response")
-        response_text = summary or final_resp or "I could not process your request."
+        summary = result.get("summary")
+        response_text = final_resp or summary or "I could not process your request."
 
         # Inject user_query into tool_result metadata for persistence
         if "tool_result" in result and result["tool_result"]:
@@ -153,7 +153,7 @@ class AgentOrchestrator:
         # Requirement 1: Extract pure SQL and ensure it's not in the summary
         # If any node populated 'generated_sql', use it. Otherwise, extract from the LLM's raw output if available.
         raw_sql = result.get("generated_sql") or result.get("sql", "")
-        pure_sql = SQLParser.extract_sql(raw_sql) or (raw_sql if SQLParser.is_valid_query(raw_sql) else None)
+        pure_sql = SQLParser.extract_sql(raw_sql) or (raw_sql if SQLParser.is_executable(raw_sql) else None)
 
         return {
             "summary": response_text,
