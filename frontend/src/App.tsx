@@ -32,7 +32,6 @@ function AppContent() {
           <Route path="/builder" element={<PrivateRoute><DashboardBuilderView /></PrivateRoute>} />
           <Route path="/builder/:id" element={<PrivateRoute><DashboardBuilderView /></PrivateRoute>} />
           <Route path="/connections" element={<PrivateRoute><DashboardView /></PrivateRoute>} />
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </main>
     </div>
