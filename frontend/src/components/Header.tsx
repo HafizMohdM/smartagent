@@ -13,6 +13,7 @@ export default function Header() {
     const dropdownRef = useRef<HTMLDivElement>(null);
 
     const isLoginPage = location.pathname === '/login';
+    const isLandingPage = location.pathname === '/landing';
 
     useEffect(() => {
         function handleClickOutside(event: MouseEvent) {
@@ -32,7 +33,7 @@ export default function Header() {
         navigate('/login');
     };
 
-    if (isLoginPage || !username) return null;
+    if (isLoginPage || isLandingPage || !username) return null;
 
     // Get initials for avatar
     const initials = username
@@ -47,8 +48,8 @@ export default function Header() {
         <header className="app-header">
             {/* Left: Brand */}
             <div className="header-brand" onClick={() => navigate('/dashboard')}>
-                <div className="header-logo-mark">✨</div>
-                <span className="header-title">SmartAgent</span>
+                <div className="header-logo-mark" style={{ background: 'linear-gradient(135deg, #6F1D1B, #99582A)' }}>✨</div>
+                <span className="header-title" style={{ fontFamily: "'Playfair Display', serif" }}>cognivelt AI</span>
             </div>
 
             {/* Mobile Menu Toggle */}

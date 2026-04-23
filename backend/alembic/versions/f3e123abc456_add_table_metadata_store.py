@@ -20,6 +20,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # Ensure pgvector extension is present before creating tables using vector type
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
     op.create_table('table_metadata_store',
         sa.Column('id', sa.UUID(), nullable=False),
         sa.Column('connection_id', sa.UUID(), nullable=False),
@@ -37,9 +40,6 @@ def upgrade() -> None:
         sa.UniqueConstraint('connection_id', 'schema_name', 'table_name', name='uq_connection_schema_table')
     )
     op.create_index(op.f('ix_table_metadata_store_connection_id'), 'table_metadata_store', ['connection_id'], unique=False)
-    
-    # Ensure pgvector extension is present (it should be from previous migrations, but safe check)
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     
     # HNSW Index for cosine similarity
     try:

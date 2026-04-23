@@ -23,65 +23,65 @@ export default function DashboardView() {
         <div className="dashboard-layout">
             <aside className="app-sidebar">
                 <nav className="sidebar-nav" style={{ marginTop: '12px' }}>
-                    <div className="sidebar-divider">AGENT</div>
+                    <div className="sidebar-divider">AI Workspace</div>
                     <button
                         className="sidebar-item sidebar-chat-btn"
                         onClick={() => navigate('/chat')}
                     >
                         <span className="sidebar-icon">💬</span>
-                        <span>Chat Assistant</span>
+                        <span>Cogni-Assistant</span>
                     </button>
 
-                    <div className="sidebar-divider">DATA</div>
+                    <div className="sidebar-divider">DATA Hub</div>
                     <button
                         className={`sidebar-item ${activeTab === 'connections' ? 'sidebar-active' : ''}`}
                         onClick={() => setActiveTab('connections')}
                     >
                         <span className="sidebar-icon">🗄️</span>
-                        <span>Connections</span>
+                        <span>Data Sources</span>
                     </button>
                     <button
                         className={`sidebar-item ${activeTab === 'queries' ? 'sidebar-active' : ''}`}
                         onClick={() => setActiveTab('queries')}
                     >
                         <span className="sidebar-icon">📋</span>
-                        <span>Saved Queries</span>
+                        <span>Insight Library</span>
                     </button>
                     <button
                         className={`sidebar-item ${activeTab === 'reports' ? 'sidebar-active' : ''}`}
                         onClick={() => setActiveTab('reports')}
                     >
                         <span className="sidebar-icon">📈</span>
-                        <span>Reports</span>
+                        <span>Insights</span>
                     </button>
                     <button
                         className="sidebar-item"
                         onClick={() => navigate('/builder')}
                     >
                         <span className="sidebar-icon">🏗️</span>
-                        <span>Dashboard Builder</span>
+                        <span>Dashboards</span>
                     </button>
 
                     {isAdmin && (
                         <>
-                            <div className="sidebar-divider">ADMIN</div>
+                            <div className="sidebar-divider">Governance</div>
                             <button
                                 className={`sidebar-item ${activeTab === 'approvals' ? 'sidebar-active' : ''}`}
                                 onClick={() => setActiveTab('approvals')}
                             >
                                 <span className="sidebar-icon">✅</span>
-                                <span>Approvals</span>
+                                <span>Access Control</span>
                             </button>
                         </>
                     )}
 
-                    <div className="sidebar-divider">USER</div>
+                    <div className="sidebar-divider">Account</div>
                     <button
                         className={`sidebar-item ${activeTab === 'profile' ? 'sidebar-active' : ''}`}
                         onClick={() => setActiveTab('profile')}
                     >
                         <span className="sidebar-icon">👤</span>
-                        <span>Profile</span>
+                        <span>Profile Settings  </span>
                     </button>
                 </nav>
                 <div className="sidebar-footer">
@@ -131,7 +131,7 @@ function ConnectionsPanel({ isAdmin, role }: { isAdmin: boolean; role: string | 
                             setSelectedIds(validIds);
                             return;
                         }
-                    } catch (err) {}
+                    } catch (err) { }
                 }
                 const first = data.find(c => c.status === 'approved');
                 if (first) setSelectedIds([first.id]);
