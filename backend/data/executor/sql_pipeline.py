@@ -206,6 +206,7 @@ class SchemaAwareSQLPipeline:
                         schema=schema,
                         connection_id=kwargs.get('connection_id'),
                         error_context=str(e),
+                        failed_sql=current_sql,
                         report_mode=kwargs['report_mode'],
                         db_name=kwargs.get('db_name')
                     )
@@ -242,9 +243,17 @@ class SchemaAwareSQLPipeline:
         
         if not safe_cols: safe_cols = [table_cols[0]] # Absolute minimum
 
-        cols_str = ", ".join(safe_cols)
-        fallback_sql = f"SELECT {cols_str} FROM {best_table} LIMIT 50"
-        
+        # LLM-based Safe Fallback Generation
+        try:
+            # Pass only the best table's schema to save tokens and focus the LLM
+            pruned_schema = {best_table: schema[best_table]}
+            fallback_sql_raw = await self._generator.generate_fallback(query, pruned_schema)
+            fallback_sql = SQLParser.extract_sql(fallback_sql_raw) or fallback_sql_raw
+        except Exception as e:
+            logger.warning(f"LLM fallback generation failed: {e}. Reverting to hardcoded fallback.")
+            cols_str = ", ".join(safe_cols)
+            fallback_sql = f"SELECT {cols_str} FROM {best_table} LIMIT 50"
+            
         # Security Assertion
         assert "*" not in fallback_sql, "Security Breach: SELECT * detected in fallback!"
         
@@ -679,6 +688,7 @@ class SchemaAwareSQLPipeline:
                         schema=schema,
                         connection_id=connection_id,
                         error_context=error_str,
+                        failed_sql=current_sql,
                         report_mode=report_mode,
                         db_name=db_name,
                         all_db_names=all_db_names,

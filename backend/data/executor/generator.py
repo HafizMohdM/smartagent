@@ -127,13 +127,17 @@ TYPE: SQL
 QUERY:
 SELECT ...
 
-STRICT RULES:
-* Use ONLY tables from SCHEMA
-* Use ONLY the EXACT column names from SCHEMA (no shortcuts, no invented names)
-* Use RELATIONSHIPS for JOINs
-* NEVER invent or abbreviate column names
-* RETURN EXACTLY ONE SQL QUERY
-* DO NOT explain anything
+STRICT RULES (NON-NEGOTIABLE):
+1. Use ONLY the provided schema.
+2. DO NOT invent tables or columns.
+3. DO NOT rename fields.
+4. ONLY generate SELECT or WITH queries.
+5. ALWAYS include LIMIT 100.
+6. NEVER use INSERT, UPDATE, DELETE, DROP, ALTER.
+7. Use exact column names from schema.
+8. If the query is vague, return a valid general query.
+9. DO NOT explain anything.
+10. OUTPUT ONLY SQL.
 
 REPORT MODE RULES (apply when query is analytical/aggregated):
 * DO NOT add LIMIT unless the user explicitly asks for a limited number of rows
@@ -266,6 +270,7 @@ class SQLGenerator:
         schema: dict,
         connection_id: Optional[str] = None,
         error_context: str = None,
+        failed_sql: str = None,
         report_mode: bool = False,
         db_name: Optional[str] = None,
         all_db_names: Optional[List[str]] = None,
@@ -335,12 +340,33 @@ class SQLGenerator:
             # On retry, also inject the exact column list to prevent the LLM
             # from repeating the same invented column names.
             exact_cols = self._build_exact_column_context(pruned_schema)
-            messages.append(SystemMessage(content=(
-                f"Your previous query failed with this error:\n{error_context}\n\n"
-                f"EXACT COLUMNS AVAILABLE (use ONLY these):\n{exact_cols}\n\n"
-                "Fix the SQL using only the column names listed above. "
-                "Do NOT use first_name, last_name, or any column not in the list above."
-            )))
+            repair_prompt = f"""You are a SQL repair engine.
+
+STRICT RULES:
+
+1. Fix the SQL using ONLY the schema.
+2. DO NOT introduce new tables or columns.
+3. DO NOT change intent.
+4. Replace invalid columns with closest valid column.
+5. KEEP LIMIT 100.
+6. DO NOT explain.
+7. OUTPUT ONLY SQL.
+
+SCHEMA:
+{exact_cols}
+
+USER QUERY:
+{user_query}
+
+FAILED SQL:
+{failed_sql or "Not provided"}
+
+ERROR:
+{error_context}
+
+OUTPUT:
+Return ONLY corrected SQL."""
+            messages.append(SystemMessage(content=repair_prompt))
 
         response = await self._llm.ainvoke(messages)
         sql = response.content.strip()
@@ -439,3 +465,156 @@ class SQLGenerator:
 
         unique_rel = sorted(set(relationship_lines))
         return "\n".join(schema_lines), "\n".join(unique_rel) or "No explicit relationships provided."
+
+    async def generate_fallback(self, user_query: str, schema: dict) -> str:
+        """
+        Generate a safe fallback query using the LLM when all else fails.
+        """
+        # Create a simplified schema representation to save tokens
+        pruned_schema = {
+            t: {"columns": [c.get("name") if isinstance(c, dict) else str(c) for c in info.get("columns", [])]}
+            for t, info in schema.items()
+        }
+        
+        prompt = f"""Generate a SAFE fallback SQL.
+
+RULES:
+- Use most relevant table
+- Use safe columns: id, name, email, status
+- NEVER use SELECT *
+- LIMIT 50
+- No sensitive fields
+
+OUTPUT:
+SQL only
+
+SCHEMA:
+{pruned_schema}
+
+USER QUERY:
+{user_query}"""
+
+        messages = [SystemMessage(content=prompt)]
+        response = await self._llm.ainvoke(messages)
+        sql = response.content.strip()
+        
+        # Strip markdown code fences if present
+        if sql.startswith("```"):
+            lines = sql.split("\n")
+            sql = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            
+        return sql
+
+    async def extract_query_metadata(self, raw_data: str) -> dict:
+        """
+        Extract the SQL query and generate a short meaningful title from raw data.
+        Ensures rows/columns are ignored as per strict rules.
+        """
+        prompt = f"""You are a query persistence engine.
+
+STRICT RULES:
+
+1. Extract ONLY:
+   - SQL query
+   - Short meaningful title
+2. DO NOT include:
+   - rows
+   - columns
+   - preview data
+3. DO NOT modify SQL.
+
+OUTPUT:
+
+{{
+  "title": "...",
+  "generated_sql": "..."
+}}
+
+RAW DATA:
+{raw_data}"""
+
+        messages = [SystemMessage(content=prompt)]
+        response = await self._llm.ainvoke(messages)
+        content = response.content.strip()
+        
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            
+        import json
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            from backend.agent.utils.sql_parser import SQLParser
+            sql = SQLParser.extract_sql(content)
+            return {"title": "Saved Query", "generated_sql": sql or ""}
+
+    async def render_full_data(self, data: dict) -> str:
+        """
+        Render the full dataset using strict rules.
+        """
+        prompt = f"""You are a data renderer.
+
+You will receive FULL dataset.
+
+STRICT RULES:
+
+1. Show ALL columns.
+2. Show ALL rows (within system limits).
+3. DO NOT summarize.
+4. DO NOT modify values.
+
+FORMAT:
+
+| column1 | column2 | column3 |
+|---------|---------|---------|
+| value   | value   | value   |
+
+DATASET:
+{data}"""
+
+        messages = [SystemMessage(content=prompt)]
+        response = await self._llm.ainvoke(messages)
+        return response.content.strip()
+
+    async def format_data_preview(self, preview_data: dict) -> str:
+        """
+        Format data preview strictly into markdown tables.
+        """
+        prompt = f"""You are a data preview formatter.
+
+You will receive structured data:
+{{
+  "columns": [...],
+  "rows": [...]
+}}
+
+STRICT RULES:
+
+1. Show ONLY preview (already limited).
+2. DO NOT add or remove columns.
+3. DO NOT rename columns.
+4. DO NOT show more data.
+5. Replace null values with "-".
+6. DO NOT output JSON.
+7. DO NOT explain full dataset.
+
+FORMAT:
+
+| column1 | column2 | column3 |
+|---------|---------|---------|
+| value   | value   | value   |
+
+AFTER TABLE:
+"Showing preview of data. Save query to view full results."
+
+If empty:
+"No data found"
+
+DATA:
+{preview_data}"""
+
+        messages = [SystemMessage(content=prompt)]
+        response = await self._llm.ainvoke(messages)
+        return response.content.strip()
