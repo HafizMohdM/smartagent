@@ -5,6 +5,7 @@ connection_id is now OPTIONAL — sessions may exist without a DB connection.
 from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
+import json
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -120,6 +121,10 @@ async def create_message(
     query_result_snapshot: Optional[dict] = None,
 ) -> ChatMessage:
     """Insert a new chat message."""
+    # Sanitize complex types (date, datetime) for JSONB storage
+    if query_result_snapshot:
+        query_result_snapshot = json.loads(json.dumps(query_result_snapshot, default=str))
+
     msg = ChatMessage(
         session_id=session_id,
         role=role,

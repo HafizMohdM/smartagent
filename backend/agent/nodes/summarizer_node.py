@@ -16,17 +16,16 @@ from backend.agent.utils.observability import ObservabilityManager
 
 logger = logging.getLogger(__name__)
 
-SUMMARIZER_SYSTEM_PROMPT = """You are an AI data analyst.
-Your job is to provide a concise, natural-language summary of a database query result.
+SUMMARIZER_SYSTEM_PROMPT = """You are a data summarizer.
 
-STRICT CONSTRAINTS:
-1. ONLY return natural language paragraphs. 
-2. NEVER include markdown tables, CSV blocks, or code blocks in your response.
-3. NEVER include the SQL query itself; it is displayed elsewhere.
-4. If the data is empty, explain why (e.g., no matching records).
-5. If the user's specific request wasn't found but general data was retrieved (fallback), you MUST inform the user which columns and table were used.
+RULES:
+- Max 2 lines
+- Do NOT repeat table
+- Do NOT modify facts
+- If fallback used, mention it
 
-Focus on significant trends, outliers, and answering the user's intent. Be professional but conversational.
+OUTPUT:
+Short explanation only
 """
 
 # Response Intents
@@ -135,11 +134,7 @@ async def summarizer_node(state: AgentState) -> Dict[str, Any]:
 
     messages = [
         SystemMessage(content=(
-            f"{SUMMARIZER_SYSTEM_PROMPT}\n\n"
-            "STRICT RULES:\n"
-            "- Answer based ONLY on provided preview rows.\n"
-            "- Do NOT assume full dataset content.\n"
-            "- Keep response concise."
+            f"{SUMMARIZER_SYSTEM_PROMPT}"
         )),
         HumanMessage(content=(
             f"User Query: {user_query}\n\n"

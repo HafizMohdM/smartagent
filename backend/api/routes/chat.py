@@ -367,8 +367,12 @@ async def send_chat_message(
     snapshot = None
     if result.get("results"):
         snapshot = result["results"]
-    elif result.get("tool_result") and hasattr(result["tool_result"], "data"):
-        snapshot = result["tool_result"].data
+    elif result.get("tool_result"):
+        tool_res = result["tool_result"]
+        if isinstance(tool_res, dict):
+            snapshot = tool_res.get("data")
+        elif hasattr(tool_res, "data"):
+            snapshot = tool_res.data
 
     agent_msg = await create_message(
         db=db,

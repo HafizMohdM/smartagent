@@ -151,8 +151,17 @@ class AgentOrchestrator:
         await self._session_manager.add_message(session_id, "assistant", response_text)
 
         # Requirement 1: Extract pure SQL and ensure it's not in the summary
-        # If any node populated 'generated_sql', use it. Otherwise, extract from the LLM's raw output if available.
-        raw_sql = result.get("generated_sql") or result.get("sql", "")
+        # We look in: 1. state root, 2. tool result metadata, 3. tool params
+        tool_res = result.get("tool_result", {})
+        tool_meta = tool_res.get("metadata", {}) if isinstance(tool_res, dict) else {}
+        
+        raw_sql = (
+            result.get("generated_sql") or 
+            result.get("sql") or 
+            tool_meta.get("generated_sql") or 
+            result.get("tool_params", {}).get("sql") or 
+            ""
+        )
         pure_sql = SQLParser.extract_sql(raw_sql) or (raw_sql if SQLParser.is_executable(raw_sql) else None)
 
         return {
@@ -163,7 +172,7 @@ class AgentOrchestrator:
                 **result.get("metadata", {}),
                 "user_query": result.get("user_query"),
                 "generated_sql": pure_sql,
-                "data": result.get("tool_result", {}).get("data")
+                "data": tool_res.get("data")
             },
             "chart": result.get("chart_config", {}),
             # Legacy fields for potential backward compatibility
