@@ -27,6 +27,7 @@ class HybridTableRetriever:
         self, 
         user_query: str, 
         db_schema: Dict[str, Any], 
+        tenant_id: Optional[str] = None,
         connection_id: Optional[str] = None,
         limit: int = 5
     ) -> List[str]:
@@ -34,15 +35,15 @@ class HybridTableRetriever:
         Returns top relevant tables using database metadata if available, 
         otherwise falls back to hardcoded Phase 1 metadata.
         """
-        if connection_id:
+        if connection_id and tenant_id:
             try:
-                return await self._get_db_based_tables(user_query, db_schema, connection_id, limit)
+                return await self._get_db_based_tables(user_query, db_schema, tenant_id, connection_id, limit)
             except Exception as e:
-                logger.error(f"Error fetching from TableMetadataStore: {e}. Falling back to Phase 1.")
+                logger.error(f"Error fetching from TableMetadataStore for {tenant_id}/{connection_id}: {e}. Falling back to Phase 1.")
         
         return await self._get_fallback_tables(user_query, db_schema, limit)
 
-    async def _get_db_based_tables(self, user_query: str, db_schema: Dict[str, Any], connection_id: str, limit: int) -> List[str]:
+    async def _get_db_based_tables(self, user_query: str, db_schema: Dict[str, Any], tenant_id: str, connection_id: str, limit: int) -> List[str]:
         """Query pgvector backend for relevant tables."""
         query_lower = user_query.lower()
         query_keywords = [w for w in re.findall(r'\w+', query_lower) if len(w) > 2]
@@ -65,6 +66,7 @@ class HybridTableRetriever:
                 kw_conditions.append(TableMetadataStore.synonyms.any(kw))
             
             kw_stmt = select(TableMetadataStore.table_name).where(
+                TableMetadataStore.tenant_id == tenant_id,
                 TableMetadataStore.connection_id == connection_id,
                 TableMetadataStore.table_name.in_(db_schema.keys())
             )
@@ -88,6 +90,7 @@ class HybridTableRetriever:
                 TableMetadataStore.table_name,
                 TableMetadataStore.embedding.cosine_distance(query_embedding).label("distance")
             ).where(
+                TableMetadataStore.tenant_id == tenant_id,
                 TableMetadataStore.connection_id == connection_id,
                 TableMetadataStore.table_name.in_(db_schema.keys()),
                 TableMetadataStore.table_name.not_in(keyword_matches)
@@ -148,11 +151,12 @@ class HybridTableRetriever:
         # I'll just return keyword matches for fallback if embedding logic is complex to duplicate.
         return keyword_matches[:limit]
 
-    async def get_table_metadata(self, table_name: str, connection_id: Optional[str] = None) -> Dict[str, Any]:
+    async def get_table_metadata(self, table_name: str, tenant_id: Optional[str] = None, connection_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch full metadata including pre-calculated relationships."""
-        if connection_id:
+        if connection_id and tenant_id:
             async with async_session_maker() as session:
                 stmt = select(TableMetadataStore).where(
+                    TableMetadataStore.tenant_id == tenant_id,
                     TableMetadataStore.connection_id == connection_id,
                     TableMetadataStore.table_name == table_name
                 )

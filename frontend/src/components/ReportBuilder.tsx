@@ -135,8 +135,8 @@ const ReportBuilder: React.FC<ReportBuilderProps> = ({ onSave, onCancel }) => {
     ? rawResults[0].rows
     : (previewData?.executions?.flatMap(e => getSnapshotData(e.result_json)) || []);
                        
-  const allColumns = (Array.isArray(rawResults) && rawResults.length > 0 && rawResults[0].columns)
-    ? rawResults[0].columns
+  const allColumns: string[] = (Array.isArray(rawResults) && rawResults.length > 0 && rawResults[0].columns)
+    ? (rawResults[0].columns as string[])
     : (snapshotRows.length > 0 ? Object.keys(snapshotRows[0]) : []);
 
   const validation   = previewData ? isChartable(previewData.query_text) : { ok: true };

@@ -432,6 +432,9 @@ export interface SQLDataContract {
   meta: {
     row_count: number;
     execution_time_ms: number;
+    failed_sources?: { id: string; database_name?: string; error: string }[];
+    error?: string;
+    source?: string;
   };
 }
 

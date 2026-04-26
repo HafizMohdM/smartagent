@@ -48,9 +48,8 @@ class DBTParser:
                         primary_key=n_data.get("config", {}).get("primary_key", "id"),
                         attributes=[c for c in n_data.get("columns", {}).keys()]
                     )
-                    self.manager.entities[entity.name] = entity
+                    await self.manager.add_entity(entity)
             
-            self.manager._save_all()
             logger.info("✓ Completed dbt manifest ingestion.")
             
         except Exception as e:

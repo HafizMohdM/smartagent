@@ -1,73 +1,183 @@
 import logging
-import numpy as np
+import asyncio
 from typing import List, Dict, Any, Optional
 from uuid import UUID
-from sqlalchemy.orm import Session
-from sqlalchemy import select
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete, text
+from sqlalchemy.dialects.postgresql import insert
 
 from backend.models.knowledge_base_chunk import KnowledgeBaseChunk
+from backend.models.table_metadata import TableMetadataStore
+from backend.models.tenant_embedding import TenantEmbedding
 
 logger = logging.getLogger(__name__)
 
+def assert_isolation_context(tenant_id: Any, source_id: Any):
+    """MANDATORY: Global validation gate for all vector operations."""
+    assert tenant_id is not None, "Missing isolation context: tenant_id is required"
+    assert source_id is not None, "Missing isolation context: source_id is required"
+
 class PgVectorManager:
-    """Handles the lifecycle and storage of pgvector-based embeddings scoped to a Tenant."""
+    """
+    Universal tenant-isolated pgvector service.
+    Handles metrics, cache, entities, relationships, schema, and documents.
+    """
     
-    def __init__(self, db_session: Session, tenant_id: UUID):
+    def __init__(self, db_session: AsyncSession):
         self.db_session = db_session
-        self.tenant_id = tenant_id
 
-    def add_vectors(self, document_id: UUID, vectors: List[List[float]], texts: List[str]):
-        """Add embeddings and their corresponding text for a specific document."""
-        if len(vectors) != len(texts):
-            raise ValueError("Number of vectors must match number of texts")
+    async def _execute_vector_search(self, stmt, limit: int, threshold: float = None):
+        """Helper to execute an HNSW query with a guardrail retry."""
+        try:
+            # 1. First attempt with iterative scan
+            await self.db_session.execute(text("SET LOCAL hnsw.iterative_scan = on"))
+            result = await self.db_session.execute(stmt)
+            rows = list(result.all())
             
-        chunks = []
-        for i, vector in enumerate(vectors):
-            chunk = KnowledgeBaseChunk(
-                tenant_id=self.tenant_id,
-                document_id=document_id,
-                content=texts[i],
-                embedding=vector
-            )
-            chunks.append(chunk)
-            
-        self.db_session.add_all(chunks)
-        self.db_session.commit()
-        logger.info(f"✓ Added {len(chunks)} vectors to pgvector for document {document_id}")
+            # Check if we got enough results (guardrail)
+            if len(rows) < limit:
+                logger.warning(f"HNSW scan returned <k rows ({len(rows)} < {limit}). Retrying with higher ef_search.")
+                await self.db_session.execute(text("SET LOCAL hnsw.ef_search = 200"))
+                result = await self.db_session.execute(stmt)
+                rows = list(result.all())
+                
+            return rows
+        except Exception as e:
+            logger.error(f"Vector search failed: {e}")
+            raise
 
-    def search(self, query_vector: List[float], k: int = 5) -> List[Dict[str, Any]]:
-        """Search for the top k nearest neighbors using pgvector L2 distance."""
-        # Ensure query_vector is a list of floats
-        if isinstance(query_vector, np.ndarray):
-            query_vector = query_vector.tolist()
-            
+    async def search_schema(
+        self, tenant_id: str, connection_id: str,
+        query_embedding: List[float], limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        assert_isolation_context(tenant_id, connection_id)
+        
         stmt = (
-            select(KnowledgeBaseChunk)
-            .where(KnowledgeBaseChunk.tenant_id == self.tenant_id)
-            .order_by(KnowledgeBaseChunk.embedding.l2_distance(query_vector))
-            .limit(k)
+            select(
+                TableMetadataStore.table_name,
+                TableMetadataStore.description,
+                TableMetadataStore.columns,
+                TableMetadataStore.embedding.cosine_distance(query_embedding).label("distance")
+            )
+            .where(
+                TableMetadataStore.tenant_id == tenant_id,
+                TableMetadataStore.connection_id == connection_id
+            )
+            .order_by(TableMetadataStore.embedding.cosine_distance(query_embedding))
+            .limit(limit)
         )
         
-        results = self.db_session.execute(stmt).scalars().all()
+        rows = await asyncio.wait_for(self._execute_vector_search(stmt, limit), timeout=3.0)
         
-        # Format similar to what the previous VectorManager returned
         formatted_results = []
-        for row in results:
+        for row in rows:
             formatted_results.append({
-                "metadata": {
-                    "document_id": str(row.document_id),
-                    "text": row.content,
-                },
-                "content": row.content
+                "table_name": row.table_name,
+                "description": row.description,
+                "columns": row.columns,
+                "distance": row.distance
             })
             
+        logger.info(f"[RAG] tenant={tenant_id} source={connection_id} type=schema results={len(formatted_results)}")
         return formatted_results
 
-    def clear(self):
-        """Wipe the store for this tenant."""
-        stmt = select(KnowledgeBaseChunk).where(KnowledgeBaseChunk.tenant_id == self.tenant_id)
-        chunks = self.db_session.execute(stmt).scalars().all()
-        for chunk in chunks:
-            self.db_session.delete(chunk)
-        self.db_session.commit()
-        logger.info(f"✓ Cleared pgvector store for tenant {self.tenant_id}")
+    async def search_embeddings(
+        self, tenant_id: str, source_id: str, type: str,
+        query_embedding: List[float], limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        assert_isolation_context(tenant_id, source_id)
+        
+        stmt = (
+            select(
+                TenantEmbedding.content,
+                TenantEmbedding.meta_data,
+                TenantEmbedding.embedding.cosine_distance(query_embedding).label("distance")
+            )
+            .where(
+                TenantEmbedding.tenant_id == tenant_id,
+                TenantEmbedding.source_id == source_id,
+                TenantEmbedding.type == type,
+                TenantEmbedding.embedding.is_not(None)
+            )
+            .order_by(TenantEmbedding.embedding.cosine_distance(query_embedding))
+            .limit(limit)
+        )
+        
+        rows = await asyncio.wait_for(self._execute_vector_search(stmt, limit), timeout=3.0)
+        
+        formatted_results = []
+        for row in rows:
+            formatted_results.append({
+                "content": row.content,
+                "metadata": row.meta_data,
+                "distance": row.distance
+            })
+            
+        logger.info(f"[RAG] tenant={tenant_id} source={source_id} type={type} results={len(formatted_results)}")
+        return formatted_results
+
+    async def get_entities(self, tenant_id: str, source_id: str) -> List[Dict[str, Any]]:
+        assert_isolation_context(tenant_id, source_id)
+        stmt = select(TenantEmbedding).where(
+            TenantEmbedding.tenant_id == tenant_id,
+            TenantEmbedding.source_id == source_id,
+            TenantEmbedding.type == 'entity'
+        )
+        result = await self.db_session.execute(stmt)
+        return [row.meta_data for row in result.scalars().all()]
+
+    async def get_relationships(self, tenant_id: str, source_id: str) -> List[Dict[str, Any]]:
+        assert_isolation_context(tenant_id, source_id)
+        stmt = select(TenantEmbedding).where(
+            TenantEmbedding.tenant_id == tenant_id,
+            TenantEmbedding.source_id == source_id,
+            TenantEmbedding.type == 'relationship'
+        )
+        result = await self.db_session.execute(stmt)
+        return [row.meta_data for row in result.scalars().all()]
+
+    async def upsert_embedding(
+        self, tenant_id: str, source_id: str, type: str,
+        content: str, meta_data: Dict[str, Any] = None, embedding: List[float] = None,
+        key: str = None
+    ):
+        assert_isolation_context(tenant_id, source_id)
+        
+        stmt = insert(TenantEmbedding).values(
+            tenant_id=tenant_id,
+            source_id=source_id,
+            type=type,
+            key=key,
+            content=content,
+            meta_data=meta_data,
+            embedding=embedding
+        )
+        
+        if key:
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_tenant_source_type_key",
+                set_={
+                    "content": content,
+                    "meta_data": meta_data,
+                    "embedding": embedding,
+                    "updated_at": text("NOW()")
+                }
+            )
+            
+        await self.db_session.execute(stmt)
+        await self.db_session.commit()
+        logger.info(f"✓ Upserted {type} for tenant {tenant_id}, source {source_id}")
+
+    async def delete_by_source(self, tenant_id: str, source_id: str, type: str = None):
+        assert_isolation_context(tenant_id, source_id)
+        stmt = delete(TenantEmbedding).where(
+            TenantEmbedding.tenant_id == tenant_id,
+            TenantEmbedding.source_id == source_id
+        )
+        if type:
+            stmt = stmt.where(TenantEmbedding.type == type)
+            
+        await self.db_session.execute(stmt)
+        await self.db_session.commit()
+        logger.info(f"✓ Cleared pgvector store for tenant {tenant_id}, source {source_id}, type {type}")

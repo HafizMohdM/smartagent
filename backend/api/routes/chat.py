@@ -301,13 +301,38 @@ async def send_chat_message(
 
         # ── Multi-DB path ──────────────────────────────────────────────────────
         if len(validated_conns) > 1:
+            from backend.data.pool.engine import vector_async_session_maker
+            from backend.rag.index.pgvector_manager import PgVectorManager
+            from backend.rag.embeddings.service import EmbeddingService
+            import json
+            
+            semantic_contexts = {}
+            embedding_svc = EmbeddingService()
+            query_vec = await embedding_svc.aembed_query(request.message)
+            
+            async with vector_async_session_maker() as rag_session:
+                rag_svc = PgVectorManager(db_session=rag_session)
+                for conn in validated_conns:
+                    try:
+                        metrics = await rag_svc.search_embeddings(
+                            tenant_id=tenant_id, source_id=str(conn.id),
+                            type='metric', query_embedding=query_vec, limit=5
+                        )
+                        semantic_contexts[conn.connection_name] = json.dumps(metrics, default=str)
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch RAG context for {conn.connection_name}: {e}")
+                        semantic_contexts[conn.connection_name] = ""
+
             from backend.agent.multi_db_orchestrator import MultiDBQueryOrchestrator
             multi_orch = MultiDBQueryOrchestrator()
+            
             try:
                 multi_result = await multi_orch.run(
                     query=request.message,
                     connections=validated_conns,
                     history=history,
+                    semantic_context=semantic_contexts,
+                    tenant_id=tenant_id,
                 )
             finally:
                 await session_mgr.delete_session(runtime_session_id)
@@ -346,6 +371,8 @@ async def send_chat_message(
                 result = await orchestrator.run(
                     query=request.message,
                     session_id=runtime_session_id,
+                    tenant_id=tenant_id,
+                    connection_id=connection_id,
                     history=history,
                 )
             finally:

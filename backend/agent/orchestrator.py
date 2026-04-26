@@ -93,6 +93,8 @@ class AgentOrchestrator:
         self,
         query: str,
         session_id: str,
+        tenant_id: str,
+        connection_id: str,
         history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """
@@ -116,6 +118,8 @@ class AgentOrchestrator:
         initial_state: AgentState = {
             "user_query": query,
             "session_id": session_id,
+            "tenant_id": tenant_id,
+            "connection_id": connection_id,
             "messages": history,
             "plan": {},
             "selected_tool": None,

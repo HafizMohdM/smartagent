@@ -17,6 +17,10 @@ class AgentState(TypedDict, total=False):
     # Current session identifier
     session_id: str
 
+    # Tenant isolation context (mandatory for RAG)
+    tenant_id: str
+    connection_id: str
+
     # Conversation history (list of {"role": ..., "content": ...})
     messages: List[Dict[str, str]]
 

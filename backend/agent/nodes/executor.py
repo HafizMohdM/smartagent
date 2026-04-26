@@ -56,6 +56,11 @@ async def executor_node(state: AgentState) -> Dict[str, Any]:
 
     try:
         logger.info(f"Executing tool: {tool_name}")
+        
+        # Inject tenant isolation context into params
+        tool_params["tenant_id"] = state.get("tenant_id")
+        tool_params["connection_id"] = state.get("connection_id")
+        
         result = await tool.execute(params=tool_params, session_id=session_id)
         
         # Track execution count

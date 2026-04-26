@@ -83,6 +83,17 @@ async def create_connection(
 async def delete_connection(db: AsyncSession, connection_id: str, tenant_id: str) -> bool:
     conn = await get_connection(db, connection_id, tenant_id)
     if conn:
+        from backend.models.tenant_embedding import TenantEmbedding
+        from sqlalchemy import delete
+        
+        # 1. Manually cleanup embeddings (since source_id is a String and doesn't auto-cascade)
+        await db.execute(
+            delete(TenantEmbedding)
+            .where(TenantEmbedding.tenant_id == tenant_id)
+            .where(TenantEmbedding.source_id == str(connection_id))
+        )
+        
+        # 2. Delete the connection (TableMetadataStore will auto-cascade via FK)
         await db.delete(conn)
         await db.commit()
         return True

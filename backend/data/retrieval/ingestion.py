@@ -23,7 +23,7 @@ class SchemaIngestionService:
     def __init__(self, embedding_service: EmbeddingService):
         self._embedding_service = embedding_service
 
-    async def sync_schema(self, connection_id: UUID, connector: DatabaseConnector):
+    async def sync_schema(self, tenant_id: str, connection_id: UUID, connector: DatabaseConnector):
         """
         Synchronize the metadata store with the actual database schema.
         Handles Create, Update, and Delete (Reconciliation).
@@ -41,7 +41,7 @@ class SchemaIngestionService:
         enriched_tables = await self._enrich_and_embed(tables_data)
         
         # 4. Save to Database
-        await self._persist_metadata(connection_id, enriched_tables)
+        await self._persist_metadata(tenant_id, connection_id, enriched_tables)
         
         logger.info(f"Successfully synced {len(enriched_tables)} tables for {connection_id}")
 
@@ -176,13 +176,14 @@ class SchemaIngestionService:
         
         return list(synonyms)
 
-    async def _persist_metadata(self, connection_id: UUID, tables: List[Dict[str, Any]]):
+    async def _persist_metadata(self, tenant_id: str, connection_id: UUID, tables: List[Dict[str, Any]]):
         """Upsert metadata to TableMetadataStore and remove deleted tables."""
         async with async_session_maker() as session:
             # 1. UPSERT existing/new tables
             for table_data in tables:
                 stmt = insert(TableMetadataStore).values(
-                    id=UUID(int=hash(f"{connection_id}{table_data['schema_name']}{table_data['table_name']}") & (2**128 - 1)), # Deterministic UUID for demo
+                    id=UUID(int=hash(f"{tenant_id}{connection_id}{table_data['schema_name']}{table_data['table_name']}") & (2**128 - 1)), # Deterministic UUID for demo
+                    tenant_id=tenant_id,
                     connection_id=connection_id,
                     schema_name=table_data["schema_name"],
                     table_name=table_data["table_name"],

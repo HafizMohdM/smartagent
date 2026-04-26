@@ -99,9 +99,11 @@ class DatabaseTool(BaseTool):
                 query=question,
                 schema=schema,
                 connector=connector,
-                connection_id=connection_id,
+                tenant_id=params.get("tenant_id"),
+                connection_id=connection_id or params.get("connection_id"),
                 report_mode=report_mode,
                 trace_context=trace_context,
+                semantic_context=params.get("semantic_context", ""),
             )
 
             # 5. Convert pipeline result to ToolResult with strict validation

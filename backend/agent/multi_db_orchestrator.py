@@ -42,14 +42,17 @@ class MultiDBQueryOrchestrator:
         connections: List[Any],
         history: Optional[List[Dict]] = None,
         trace_context: Optional[Dict[str, Any]] = None,
+        semantic_context: Optional[Dict[str, str]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Execute a NL query against multiple databases in parallel and return the strict contract.
         """
         ctx = trace_context or {}
+        semantic_contexts = semantic_context or {}
         all_db_names = [conn.connection_name for conn in connections]
         tasks = [
-            self._query_single_db(query, conn, all_db_names, ctx)
+            self._query_single_db(query, conn, all_db_names, ctx, semantic_contexts.get(conn.connection_name, ""), tenant_id)
             for conn in connections
         ]
         # Each res is now a strict contract dict
@@ -99,7 +102,7 @@ class MultiDBQueryOrchestrator:
         
         return validate_db_result(result, source="multi_db_orchestrator", trace_context=ctx)
 
-    async def _query_single_db(self, query: str, conn: Any, all_db_names: List[str], trace_context: Dict[str, Any]) -> Dict[str, Any]:
+    async def _query_single_db(self, query: str, conn: Any, all_db_names: List[str], trace_context: Dict[str, Any], semantic_context: str = "", tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Query a single DB and return the strict contract."""
         db_id = str(conn.id)
         db_name = conn.connection_name
@@ -133,9 +136,11 @@ class MultiDBQueryOrchestrator:
                     schema=schema,
                     connector=connector,
                     connection_id=db_id,
+                    tenant_id=tenant_id,
                     db_name=db_name,
                     all_db_names=all_db_names,
                     trace_context=ctx,
+                    semantic_context=semantic_context,
                 ),
                 timeout=_PER_DB_TIMEOUT,
             )

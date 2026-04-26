@@ -60,6 +60,9 @@ def enforce_pie_sql(sql: str) -> str:
 SQL_GENERATION_PROMPT = """You are a production-grade database AI assistant.
 {db_context}
 {domain_hint}
+
+SEMANTIC BUSINESS CONTEXT (Metrics & Entities):
+{semantic_context}
 ---
 
 STEP 1: DETECT INTENT
@@ -88,14 +91,28 @@ SYNONYM RESOLUTION HINTS (Mapped from vague user terms):
 {resolved_columns_hint}
 
 NAME SEARCH RULES:
-- When searching by a person's name, use the columns listed above.
-- For a full name like "Michael Brown", split and match:
-    WHERE e.<first_col> = 'Michael' AND e.<last_col> = 'Brown'
-  OR use CONCAT:
-    WHERE CONCAT(e.<first_col>, ' ', e.<last_col>) = 'Michael Brown'
-- If only one name column exists, use LIKE:
-    WHERE e.<name_col> LIKE '%Michael Brown%'
-- NEVER reference a column not listed in SCHEMA.
+ NAME FILTER PRIORITY (STRICT)
+
+{strict_name_filter}
+
+If STRICT FILTER is provided:
+
+- You MUST use it exactly
+- DO NOT extract names from query
+- DO NOT modify values
+
+If STRICT FILTER is NOT provided:
+
+- Apply name filter ONLY if:
+  - exactly TWO words
+  - both start with uppercase
+- Otherwise DO NOT APPLY NAME FILTER
+
+---
+
+NAME SEARCH RULES:
+- Use ONLY columns listed in SCHEMA
+- NEVER invent column names
 
 GENERAL VAGUE WORD MAPPING:
 | User says  | Map to                                          |
@@ -204,8 +221,24 @@ RELATIONSHIPS:
 {filtered_relationships}
 """
 
+def extract_name(query: str):
+    """
+    Strictly extract FirstName LastName only.
+    Prevents LLM hallucination like 'day uid'
+    """
+    matches = re.findall(r'\b[A-Z][a-z]+\s[A-Z][a-z]+\b', query)
+
+    if matches:
+        try:
+            first, last = matches[0].split()
+            return first.strip(), last.strip()
+        except Exception:
+            return None, None
+
+    return None, None
 
 def normalize_query(query: str) -> str:
+    
     """
     Pre-process vague or name-only inputs into explicit find-by-name queries.
 
@@ -268,6 +301,7 @@ class SQLGenerator:
         self,
         user_query: str,
         schema: dict,
+        tenant_id: Optional[str] = None,
         connection_id: Optional[str] = None,
         error_context: str = None,
         failed_sql: str = None,
@@ -276,6 +310,7 @@ class SQLGenerator:
         all_db_names: Optional[List[str]] = None,
         domain_hint: str = "",
         resolved_columns_hint: str = "",
+        semantic_context: str = "",
     ) -> str:
         """
         Generate a SQL query from a natural-language question.
@@ -292,10 +327,21 @@ class SQLGenerator:
         # 0. Normalize vague / name-only queries
         user_query = normalize_query(user_query)
         logger.info(f"Normalized query: {user_query}")
+        first_name, last_name = extract_name(user_query)
+        strict_name_filter = ""
+        if first_name and last_name:
+            strict_name_filter = f"""
+        STRICT FILTER:
+        WHERE e.first_name = '{first_name}'
+        AND e.last_name = '{last_name}'
+        """
+            logger.info(f"✅ Extracted name: {first_name} {last_name}")
+        else:
+            logger.info("⚠️ No valid name extracted")
 
         # 1. Retrieve relevant tables
         relevant_table_names = await self._hybrid_retriever.aget_relevant_tables(
-            user_query, schema, connection_id=connection_id, limit=5
+            user_query, schema, tenant_id=tenant_id, connection_id=connection_id, limit=5
         )
 
         # Force-include employee table when relevant
@@ -309,7 +355,7 @@ class SQLGenerator:
 
         # 2. Build pruned schema and format for prompt
         pruned_schema = {name: schema[name] for name in relevant_table_names if name in schema}
-        formatted_schema, formatted_relationships = await self._format_schema(pruned_schema, connection_id)
+        formatted_schema, formatted_relationships = await self._format_schema(pruned_schema, tenant_id, connection_id)
 
         # 3. Resolve actual name columns from the raw schema (not metadata)
         name_column_hints = _resolve_name_columns(pruned_schema)
@@ -329,9 +375,11 @@ class SQLGenerator:
                 filtered_schema=formatted_schema,
                 filtered_relationships=formatted_relationships,
                 name_column_hints=name_column_hints,
+                strict_name_filter=strict_name_filter,
                 db_context=db_context,
                 domain_hint=domain_hint,
                 resolved_columns_hint=resolved_columns_hint,
+                semantic_context=semantic_context,
             )),
             HumanMessage(content=user_query),
         ]
@@ -435,14 +483,14 @@ Return ONLY corrected SQL."""
 
         return {k: v for k, v in schema.items() if k in relevant_tables}
 
-    async def _format_schema(self, schema: dict, connection_id: Optional[str] = None) -> tuple:
+    async def _format_schema(self, schema: dict, tenant_id: Optional[str] = None, connection_id: Optional[str] = None) -> tuple:
         """Format schema dict into a readable string for the LLM prompt."""
         schema_lines = []
         relationship_lines = []
         selected_tables = set(schema.keys())
 
         for table_name in selected_tables:
-            metadata = await self._hybrid_retriever.get_table_metadata(table_name, connection_id)
+            metadata = await self._hybrid_retriever.get_table_metadata(table_name, tenant_id, connection_id)
 
             description = metadata.get("description", "No description available.")
             col_list = metadata.get("columns", [])
