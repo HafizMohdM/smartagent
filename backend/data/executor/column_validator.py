@@ -42,6 +42,9 @@ SQL_KEYWORDS = {
     "INTERVAL", "SERIAL", "BIGSERIAL", "UUID", "JSONB", "JSON",
     "XML", "MONEY", "INET", "CIDR", "MACADDR", "BIT", "VARBIT",
     "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
+    "SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", 
+    "YEAR", "DECADE", "CENTURY", "MILLENNIUM", "DOW", "DOY", "EPOCH", 
+    "ISODOW", "ISOYEAR", "TIMEZONE", "TIMEZONE_HOUR", "TIMEZONE_MINUTE",
 }
 
 
@@ -224,8 +227,9 @@ class ColumnValidator:
             if not part or part == "*":
                 continue
 
-            # Remove alias: "col AS alias" → "col"
-            alias_match = re.match(r'(.+?)\s+AS\s+\w+', part, re.IGNORECASE)
+            # Remove alias: "col AS alias" or implicit "col alias" → "col"
+            # We look for a space followed by an optional AS and then a word at the end.
+            alias_match = re.match(r'(.+?)\s+(?:AS\s+)?(\w+)$', part, re.IGNORECASE)
             if alias_match:
                 part = alias_match.group(1).strip()
 
@@ -243,7 +247,8 @@ class ColumnValidator:
     def _extract_identifiers(self, text: str, columns: Set[str]) -> None:
         """Extract SQL identifiers (column names) from a text fragment."""
         # Find all word tokens that look like column references
-        tokens = re.findall(r'(?:(\w+)\.)?(\w+)', text)
+        # Uses word boundaries to avoid partial matches
+        tokens = re.findall(r'\b(?:(\w+)\.)?(\w+)\b', text)
         for _table_prefix, col in tokens:
             upper = col.upper()
             if upper in SQL_KEYWORDS:

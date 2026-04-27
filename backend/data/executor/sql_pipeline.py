@@ -153,6 +153,20 @@ class SchemaAwareSQLPipeline:
             logger.warning(f"[Pipeline] Validation failed: {safety_reason if not is_safe else schema_reason}")
             return await self._handle_pipeline_failure(query, schema, connector, intent, domain, telemetry, t0, schema_reason)
 
+        # 5b. Column-Level Validation (Levenshtein + Keywords)
+        col_validation = self._column_validator.validate(pure_sql, schema)
+        if not col_validation.is_valid:
+            if col_validation.fixed_sql:
+                logger.info(f"[Pipeline] Column auto-fix: {col_validation.suggested_fixes}")
+                pure_sql = col_validation.fixed_sql
+            else:
+                # Embedding-based resolution fallback
+                for missing in col_validation.missing_columns:
+                    resolved_col = await self._column_resolver.resolve_column(missing, schema, connection_id)
+                    if resolved_col:
+                        import re
+                        pure_sql = re.sub(rf'\b{re.escape(missing)}\b', resolved_col, pure_sql, flags=re.IGNORECASE)
+
         # 6. Execute with Repair
         return await self._execute_with_repair(
             sql=pure_sql, schema=schema, connector=connector, 
